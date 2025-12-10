@@ -9,10 +9,10 @@ import json
 st.set_page_config(page_title="Jadwal Poli (Streamlit Full)", layout="wide")
 
 # ---------------------------
-# Constants for Excel-like view (UPDATED FOR FULL RANGE)
+# Constants for Excel-like view
 # ---------------------------
 TIME_SLOTS = [
-    "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", 
+    "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", 
     "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30"
 ]
 
@@ -89,7 +89,6 @@ def expand_range_safe(range_str: str, interval_minutes: int = 30):
 def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
     """Create Excel-like view with POLI, JENIS, HARI, DOKTER as rows and TIME_SLOTS as columns"""
     
-    # Create a copy and ensure time slots are standardized
     df = df_input.copy()
     
     # Standardize time slots to match TIME_SLOTS format
@@ -462,8 +461,241 @@ def show_excel_view():
         eksekutif_count = (filtered_excel_df[TIME_SLOTS] == "E").sum().sum()
         st.metric("Slot Eksekutif (E)", eksekutif_count)
 
-def show_kanban_editor():
-    st.title("🎯 Kanban Editor")
+def show_excel_like_kanban():
+    st.title("📋 Tampilan Kanban (Excel-like)")
+    
+    if "df" not in st.session_state or st.session_state.df.empty:
+        st.info("Silakan upload file data terlebih dahulu di halaman Upload Data")
+        return
+    
+    df = st.session_state.df
+    
+    # Sidebar controls for Kanban
+    st.sidebar.header("⚙️ Kontrol Kanban")
+    
+    # Filter by Poli
+    all_poli = sorted(df["Poli"].unique())
+    selected_poli = st.sidebar.multiselect(
+        "Filter Poli",
+        all_poli,
+        default=all_poli[:min(5, len(all_poli))]  # Default pilih 5 pertama
+    )
+    
+    # Filter by Jenis
+    all_jenis = sorted(df["Jenis"].unique())
+    selected_jenis = st.sidebar.multiselect(
+        "Filter Jenis",
+        all_jenis,
+        default=all_jenis
+    )
+    
+    # Filter data
+    filtered_df = df.copy()
+    if selected_poli:
+        filtered_df = filtered_df[filtered_df["Poli"].isin(selected_poli)]
+    if selected_jenis:
+        filtered_df = filtered_df[filtered_df["Jenis"].isin(selected_jenis)]
+    
+    # Group by Hari for tabs
+    hari_list = DAYS_ORDER  # Urut sesuai hari
+    
+    # Create tabs for each day
+    tabs = st.tabs([f"📅 {hari}" for hari in hari_list])
+    
+    for idx, hari in enumerate(hari_list):
+        with tabs[idx]:
+            st.subheader(f"📅 {hari}")
+            
+            # Filter data for this day
+            day_df = filtered_df[filtered_df["Hari"] == hari]
+            
+            if day_df.empty:
+                st.info(f"Tidak ada jadwal untuk hari {hari}")
+                continue
+            
+            # Create Excel-like table for this day
+            # Group by Poli, Jenis, Dokter
+            day_records = []
+            
+            # Get unique combinations
+            unique_combos = day_df[["Poli", "Jenis", "Dokter"]].drop_duplicates()
+            
+            for _, combo in unique_combos.iterrows():
+                poli = combo["Poli"]
+                jenis = combo["Jenis"]
+                dokter = combo["Dokter"]
+                
+                # Filter for this specific doctor
+                doc_df = day_df[(day_df["Poli"] == poli) & 
+                                (day_df["Jenis"] == jenis) & 
+                                (day_df["Dokter"] == dokter)]
+                
+                # Create record
+                record = {
+                    "POLI": poli,
+                    "JENIS": jenis,
+                    "DOKTER": dokter
+                }
+                
+                # Initialize all time slots
+                for slot in TIME_SLOTS:
+                    record[slot] = ""
+                
+                # Fill in time slots
+                for _, row in doc_df.iterrows():
+                    time_slot = row["Jam"]
+                    kode = row["Kode"]
+                    record[time_slot] = kode
+                
+                day_records.append(record)
+            
+            # Create DataFrame
+            kanban_df = pd.DataFrame(day_records)
+            
+            # Sort by Poli, Jenis, Dokter
+            kanban_df = kanban_df.sort_values(["POLI", "JENIS", "DOKTER"])
+            
+            # Reset index
+            kanban_df = kanban_df.reset_index(drop=True)
+            
+            # Create HTML table with Excel-like styling
+            def create_excel_style_table(df_table):
+                html = """
+                <style>
+                .excel-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-family: Arial, sans-serif;
+                    font-size: 11px;
+                }
+                .excel-table th {
+                    background-color: #4CAF50;
+                    color: white;
+                    font-weight: bold;
+                    text-align: center;
+                    padding: 6px;
+                    border: 1px solid #ddd;
+                    position: sticky;
+                    top: 0;
+                    z-index: 10;
+                }
+                .excel-table td {
+                    padding: 4px;
+                    border: 1px solid #ddd;
+                    text-align: center;
+                    vertical-align: middle;
+                }
+                .poli-header {
+                    background-color: #e8f5e9;
+                    font-weight: bold;
+                    text-align: left;
+                }
+                .jenis-header {
+                    background-color: #f1f8e9;
+                    text-align: left;
+                }
+                .dokter-cell {
+                    text-align: left;
+                    background-color: #f9f9f9;
+                }
+                .time-header {
+                    background-color: #2196F3;
+                    color: white;
+                    min-width: 50px;
+                }
+                .reguler-cell {
+                    background-color: #C8E6C9;
+                    font-weight: bold;
+                    color: #1B5E20;
+                }
+                .poleks-cell {
+                    background-color: #BBDEFB;
+                    font-weight: bold;
+                    color: #0D47A1;
+                }
+                .empty-cell {
+                    background-color: #FFFFFF;
+                }
+                .table-container {
+                    max-height: 600px;
+                    overflow-y: auto;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                }
+                </style>
+                
+                <div class="table-container">
+                <table class="excel-table">
+                <thead>
+                <tr>
+                <th>POLI</th>
+                <th>JENIS</th>
+                <th>DOKTER</th>
+                """
+                
+                # Add time headers
+                for time in TIME_SLOTS:
+                    html += f'<th class="time-header">{time}</th>'
+                
+                html += """
+                </tr>
+                </thead>
+                <tbody>
+                """
+                
+                # Add rows
+                for _, row in df_table.iterrows():
+                    html += "<tr>"
+                    
+                    # Poli cell
+                    html += f'<td class="poli-header">{row["POLI"]}</td>'
+                    
+                    # Jenis cell
+                    html += f'<td class="jenis-header">{row["JENIS"]}</td>'
+                    
+                    # Dokter cell
+                    html += f'<td class="dokter-cell">{row["DOKTER"]}</td>'
+                    
+                    # Time slot cells
+                    for time in TIME_SLOTS:
+                        cell_value = row[time]
+                        if cell_value == "R":
+                            html += f'<td class="reguler-cell">R</td>'
+                        elif cell_value == "E":
+                            html += f'<td class="poleks-cell">E</td>'
+                        else:
+                            html += f'<td class="empty-cell"></td>'
+                    
+                    html += "</tr>"
+                
+                html += """
+                </tbody>
+                </table>
+                </div>
+                """
+                
+                return html
+            
+            # Display the table
+            if not kanban_df.empty:
+                st.markdown(create_excel_style_table(kanban_df), unsafe_allow_html=True)
+                
+                # Summary statistics for this day
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    total_slots = kanban_df[TIME_SLOTS].applymap(lambda x: 1 if x in ["R", "E"] else 0).sum().sum()
+                    st.metric(f"Total Slot {hari}", total_slots)
+                with col2:
+                    reguler_slots = kanban_df[TIME_SLOTS].applymap(lambda x: 1 if x == "R" else 0).sum().sum()
+                    st.metric(f"Reguler {hari}", reguler_slots)
+                with col3:
+                    poleks_slots = kanban_df[TIME_SLOTS].applymap(lambda x: 1 if x == "E" else 0).sum().sum()
+                    st.metric(f"Poleks {hari}", poleks_slots)
+            else:
+                st.info(f"Tidak ada data untuk hari {hari} dengan filter yang dipilih")
+
+def show_drag_drop_editor():
+    st.title("🎯 Drag & Drop Editor (Original)")
     
     if "df" not in st.session_state or st.session_state.df.empty:
         st.info("Silakan upload file data terlebih dahulu di halaman Upload Data")
@@ -1136,7 +1368,8 @@ def main():
         pages = {
             "Dashboard": "📊",
             "Tampilan Excel": "📈",
-            "Kanban Editor": "🎯",
+            "Kanban Excel-like": "📋",
+            "Drag & Drop Editor": "🎯",
             "Upload Data": "📤",
             "Export": "💾"
         }
@@ -1158,7 +1391,8 @@ def main():
         Fitur:
         - Upload data Excel/CSV
         - Tampilan Excel-like
-        - Kanban editor drag & drop
+        - Kanban Excel-like view
+        - Drag & drop editor
         - Dashboard statistik
         - Export berbagai format
         """)
@@ -1168,8 +1402,10 @@ def main():
         show_dashboard()
     elif st.session_state.current_page == "Tampilan Excel":
         show_excel_view()
-    elif st.session_state.current_page == "Kanban Editor":
-        show_kanban_editor()
+    elif st.session_state.current_page == "Kanban Excel-like":
+        show_excel_like_kanban()
+    elif st.session_state.current_page == "Drag & Drop Editor":
+        show_drag_drop_editor()
     elif st.session_state.current_page == "Upload Data":
         show_upload_data()
     elif st.session_state.current_page == "Export":
