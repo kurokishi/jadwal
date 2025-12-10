@@ -41,23 +41,38 @@ TIME_SLOTS_STR = [t.strftime("%H:%M") for t in TIME_SLOTS]
 HARI_ORDER = {"Senin": 1, "Selasa": 2, "Rabu": 3, "Kamis": 4, "Jum'at": 5}
 HARI_INDONESIA = ["Senin", "Selasa", "Rabu", "Kamis", "Jum'at"]
 
-# Inisialisasi session state
-if 'kanban_tasks' not in st.session_state:
-    st.session_state.kanban_tasks = {
-        "todo": [],
-        "in_progress": [],
-        "review": [],
-        "done": []
-    }
+# ==================== SESSION STATE INITIALIZATION ====================
 
-if 'kanban_next_id' not in st.session_state:
-    st.session_state.kanban_next_id = 1
+# Inisialisasi session state untuk Kanban
+def init_session_state():
+    """Initialize all session state variables"""
+    if 'kanban_tasks' not in st.session_state:
+        st.session_state.kanban_tasks = {
+            "todo": [],
+            "in_progress": [],
+            "review": [],
+            "done": []
+        }
+    
+    if 'kanban_next_id' not in st.session_state:
+        st.session_state.kanban_next_id = 1
+    
+    if 'processed_result' not in st.session_state:
+        st.session_state.processed_result = None
+    
+    if 'processed_data' not in st.session_state:
+        st.session_state.processed_data = None
+    
+    if 'processed_filename' not in st.session_state:
+        st.session_state.processed_filename = ""
+    
+    if 'editing_task' not in st.session_state:
+        st.session_state.editing_task = None
 
-if 'processed_result' not in st.session_state:
-    st.session_state.processed_result = None
+# Panggil fungsi init
+init_session_state()
 
-if 'processed_filename' not in st.session_state:
-    st.session_state.processed_filename = ""
+# ==================== UTILITY FUNCTIONS ====================
 
 def parse_time_range(time_str):
     """Parse rentang waktu dari string seperti '08.00 - 10.30'"""
@@ -198,7 +213,20 @@ def render_kanban_board():
     """Render Kanban board"""
     st.subheader("📋 Kanban Board - Tracking Jadwal")
     
+    # Statistics row
+    col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+    with col_stat1:
+        total_tasks = sum(len(tasks) for tasks in st.session_state.kanban_tasks.values())
+        st.metric("Total Tasks", total_tasks)
+    with col_stat2:
+        st.metric("Todo", len(st.session_state.kanban_tasks["todo"]))
+    with col_stat3:
+        st.metric("In Progress", len(st.session_state.kanban_tasks["in_progress"]))
+    with col_stat4:
+        st.metric("Done", len(st.session_state.kanban_tasks["done"]))
+    
     # Filter controls
+    st.markdown("---")
     col1, col2, col3 = st.columns(3)
     with col1:
         filter_priority = st.selectbox(
@@ -207,27 +235,39 @@ def render_kanban_board():
             key="filter_priority"
         )
     with col2:
+        # Get all assignees
+        all_assignees = set()
+        for column in st.session_state.kanban_tasks.values():
+            for task in column:
+                if task.get("assignee"):
+                    all_assignees.add(task["assignee"])
+        
         filter_assignee = st.selectbox(
             "Filter Assignee",
-            ["All"] + sorted(list(set(
-                task.get("assignee", "") 
-                for column in st.session_state.kanban_tasks.values() 
-                for task in column 
-                if task.get("assignee")
-            ))),
+            ["All"] + sorted(list(all_assignees)),
             key="filter_assignee"
         )
     with col3:
+        # Get all tags
+        all_tags = set()
+        for column in st.session_state.kanban_tasks.values():
+            for task in column:
+                for tag in task.get("tags", []):
+                    all_tags.add(tag)
+        
         filter_tags = st.multiselect(
             "Filter Tags",
-            options=sorted(list(set(
-                tag 
-                for column in st.session_state.kanban_tasks.values() 
-                for task in column 
-                for tag in task.get("tags", [])
-            ))),
+            options=sorted(list(all_tags)),
             key="filter_tags"
         )
+    
+    st.markdown("---")
+    
+    # Add new task section
+    with st.expander("➕ Tambah Task Baru", expanded=False):
+        add_task_form()
+    
+    st.markdown("---")
     
     # Create Kanban columns
     columns = st.columns(4)
@@ -260,19 +300,17 @@ def render_kanban_board():
             # Apply filters
             filtered_tasks = tasks
             if filter_priority != "All":
-                filtered_tasks = [t for t in filtered_tasks if t.get("priority") == filter_priority]
+                filtered_tasks = [t for t in filtered_tasks if t.get("priority", "medium") == filter_priority]
             if filter_assignee != "All":
                 filtered_tasks = [t for t in filtered_tasks if t.get("assignee") == filter_assignee]
             if filter_tags:
                 filtered_tasks = [t for t in filtered_tasks if any(tag in t.get("tags", []) for tag in filter_tags)]
             
-            for task in filtered_tasks:
-                render_task_card(task, col_key)
-            
-            # Add task button for Todo column
-            if col_key == "todo":
-                with st.expander("➕ Tambah Task Baru", expanded=False):
-                    add_task_form()
+            if not filtered_tasks:
+                st.info("No tasks in this column")
+            else:
+                for task in filtered_tasks:
+                    render_task_card(task, col_key)
 
 def render_task_card(task, current_column):
     """Render individual task card"""
@@ -282,22 +320,25 @@ def render_task_card(task, current_column):
         "low": "#008000"
     }
     
+    priority = task.get("priority", "medium")
+    border_color = priority_colors.get(priority, "#FFA500")
+    
     with st.container():
         st.markdown(
             f"""
             <div style='
                 background-color: white;
-                border: 2px solid {priority_colors.get(task.get("priority", "medium"), "#FFA500")};
+                border: 2px solid {border_color};
                 border-radius: 8px;
                 padding: 12px;
                 margin-bottom: 10px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             '>
             <div style='display: flex; justify-content: space-between; align-items: center;'>
-                <strong>#{task.get("id")}</strong>
-                <small>{task.get("priority", "medium").upper()}</small>
+                <strong>#{task.get("id", "?")}</strong>
+                <small style='color: {border_color}; font-weight: bold;'>{priority.upper()}</small>
             </div>
-            <h4 style='margin: 8px 0;'>{task.get("title", "No Title")}</h4>
+            <h4 style='margin: 8px 0; color: #333;'>{task.get("title", "No Title")}</h4>
             """,
             unsafe_allow_html=True
         )
@@ -306,8 +347,10 @@ def render_task_card(task, current_column):
             st.caption(task.get("description"))
         
         # Tags
-        if task.get("tags"):
-            tags_html = " ".join([f"<span style='background-color: #e0e0e0; padding: 2px 6px; border-radius: 10px; font-size: 0.8em; margin-right: 4px;'>{tag}</span>" for tag in task.get("tags")])
+        if task.get("tags") and len(task.get("tags", [])) > 0:
+            tags_html = ""
+            for tag in task.get("tags", []):
+                tags_html += f"<span style='background-color: #e0e0e0; padding: 2px 6px; border-radius: 10px; font-size: 0.8em; margin-right: 4px;'>{tag}</span>"
             st.markdown(tags_html, unsafe_allow_html=True)
         
         # Assignee and due date
@@ -322,53 +365,57 @@ def render_task_card(task, current_column):
         st.markdown("</div>", unsafe_allow_html=True)
         
         # Task actions
-        col_move1, col_move2, col_edit, col_delete = st.columns(4)
+        column_keys = ["todo", "in_progress", "review", "done"]
+        current_idx = column_keys.index(current_column)
+        
+        col_move1, col_move2, col_delete = st.columns(3)
         
         # Move left button
         with col_move1:
-            column_keys = ["todo", "in_progress", "review", "done"]
-            current_idx = column_keys.index(current_column)
             if current_idx > 0:
-                if st.button("⬅️", key=f"left_{task['id']}", help="Move left"):
+                if st.button("⬅️", key=f"left_{task['id']}_{current_column}", help="Move left"):
                     move_task(task['id'], current_column, column_keys[current_idx - 1])
                     st.rerun()
         
         # Move right button
         with col_move2:
             if current_idx < 3:
-                if st.button("➡️", key=f"right_{task['id']}", help="Move right"):
+                if st.button("➡️", key=f"right_{task['id']}_{current_column}", help="Move right"):
                     move_task(task['id'], current_column, column_keys[current_idx + 1])
                     st.rerun()
         
-        # Edit button
-        with col_edit:
-            if st.button("✏️", key=f"edit_{task['id']}", help="Edit"):
-                st.session_state.editing_task = task['id']
-                st.rerun()
-        
         # Delete button
         with col_delete:
-            if st.button("🗑️", key=f"delete_{task['id']}", help="Delete"):
+            if st.button("🗑️", key=f"delete_{task['id']}_{current_column}", help="Delete"):
                 delete_task(task['id'], current_column)
                 st.rerun()
 
 def add_task_form():
     """Form untuk menambah task baru"""
     with st.form(key="add_task_form"):
-        title = st.text_input("Judul Task*", placeholder="Contoh: Review jadwal Poli Anak")
-        description = st.text_area("Deskripsi", placeholder="Detail task...")
+        title = st.text_input("Judul Task*", placeholder="Contoh: Review jadwal Poli Anak", key="task_title")
+        description = st.text_area("Deskripsi", placeholder="Detail task...", key="task_desc")
         
         col1, col2 = st.columns(2)
         with col1:
-            priority = st.selectbox("Priority", ["low", "medium", "high"])
-            assignee = st.text_input("Assignee", placeholder="Nama penanggung jawab")
+            priority = st.selectbox("Priority", ["low", "medium", "high"], key="task_priority")
+            assignee = st.text_input("Assignee", placeholder="Nama penanggung jawab", key="task_assignee")
         with col2:
-            due_date = st.date_input("Due Date", min_value=date.today())
-            tags = st.text_input("Tags (pisahkan dengan koma)", placeholder="jadwal, review, poli")
+            due_date = st.date_input("Due Date", min_value=date.today(), key="task_due_date")
+            tags_input = st.text_input("Tags (pisahkan dengan koma)", placeholder="jadwal, review, poli", key="task_tags")
         
-        submitted = st.form_submit_button("➕ Tambah Task")
+        submitted = st.form_submit_button("➕ Tambah Task", use_container_width=True)
         
-        if submitted and title:
+        if submitted:
+            if not title.strip():
+                st.error("Judul task harus diisi!")
+                return
+                
+            # Parse tags
+            tags = []
+            if tags_input:
+                tags = [tag.strip() for tag in tags_input.split(",") if tag.strip()]
+            
             new_task = {
                 "id": st.session_state.kanban_next_id,
                 "title": title,
@@ -376,7 +423,7 @@ def add_task_form():
                 "priority": priority,
                 "due_date": due_date.strftime("%Y-%m-%d") if due_date else None,
                 "assignee": assignee,
-                "tags": [tag.strip() for tag in tags.split(",") if tag.strip()],
+                "tags": tags,
                 "created_by": "User",
                 "created_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -444,11 +491,34 @@ def import_kanban_from_excel(file):
     """Import Kanban dari Excel"""
     try:
         wb = load_workbook(file)
+        imported_data = {}
+        
         for sheet_name in wb.sheetnames:
             column_key = sheet_name.lower()
-            if column_key in st.session_state.kanban_tasks:
+            if column_key in ["todo", "in_progress", "review", "done"]:
                 df = pd.read_excel(file, sheet_name=sheet_name)
-                st.session_state.kanban_tasks[column_key] = df.to_dict('records')
+                # Convert dataframe to list of dicts
+                tasks = []
+                for _, row in df.iterrows():
+                    task = {
+                        "id": int(row.get("ID", 0)),
+                        "title": str(row.get("Title", "")),
+                        "description": str(row.get("Description", "")),
+                        "priority": str(row.get("Priority", "medium")),
+                        "due_date": str(row.get("Due Date", "")) if pd.notna(row.get("Due Date")) else None,
+                        "assignee": str(row.get("Assignee", "")) if pd.notna(row.get("Assignee")) else "",
+                        "tags": [tag.strip() for tag in str(row.get("Tags", "")).split(",") if tag.strip()],
+                        "created_by": str(row.get("Created By", "System")),
+                        "created_date": str(row.get("Created Date", "")),
+                        "last_updated": str(row.get("Last Updated", ""))
+                    }
+                    tasks.append(task)
+                
+                imported_data[column_key] = tasks
+        
+        # Update session state
+        for column, tasks in imported_data.items():
+            st.session_state.kanban_tasks[column] = tasks
         
         # Update next_id
         max_id = 0
@@ -459,8 +529,85 @@ def import_kanban_from_excel(file):
         st.session_state.kanban_next_id = max_id + 1
         
         return True
-    except:
+    except Exception as e:
+        st.error(f"Error importing: {str(e)}")
         return False
+
+def create_sample_kanban_tasks():
+    """Buat sample tasks untuk testing"""
+    sample_tasks = {
+        "todo": [
+            {
+                "id": 1,
+                "title": "Review Jadwal Poli Anak",
+                "description": "Periksa jadwal reguler dan poleks untuk Poli Anak",
+                "priority": "high",
+                "due_date": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
+                "assignee": "Koordinator Poli",
+                "tags": ["jadwal", "review", "anak"],
+                "created_by": "System",
+                "created_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")
+            },
+            {
+                "id": 2,
+                "title": "Update Template Excel",
+                "description": "Update template untuk format baru",
+                "priority": "medium",
+                "due_date": (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d"),
+                "assignee": "Admin",
+                "tags": ["template", "excel"],
+                "created_by": "System",
+                "created_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+        ],
+        "in_progress": [
+            {
+                "id": 3,
+                "title": "Proses Jadwal Bulan Desember",
+                "description": "Memproses jadwal dokter untuk bulan Desember",
+                "priority": "high",
+                "due_date": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"),
+                "assignee": "Staff IT",
+                "tags": ["processing", "desember"],
+                "created_by": "System",
+                "created_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+        ],
+        "review": [
+            {
+                "id": 4,
+                "title": "Validasi Jadwal Poli Bedah",
+                "description": "Validasi jadwal dokter bedah",
+                "priority": "medium",
+                "due_date": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
+                "assignee": "Manager",
+                "tags": ["validation", "bedah"],
+                "created_by": "System",
+                "created_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+        ],
+        "done": [
+            {
+                "id": 5,
+                "title": "Setup Aplikasi Jadwal",
+                "description": "Setup aplikasi jadwal poli",
+                "priority": "low",
+                "due_date": datetime.now().strftime("%Y-%m-%d"),
+                "assignee": "Developer",
+                "tags": ["setup", "app"],
+                "created_by": "System",
+                "created_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+        ]
+    }
+    
+    st.session_state.kanban_tasks = sample_tasks
+    st.session_state.kanban_next_id = 6
 
 # ==================== PROCESS FILE FUNCTION ====================
 
@@ -571,13 +718,20 @@ def main():
         elif page == "📋 Kanban Board":
             st.subheader("Kanban Actions")
             
+            # Add sample data button
+            if st.button("🔄 Add Sample Data", use_container_width=True):
+                create_sample_kanban_tasks()
+                st.success("Sample data added!")
+                st.rerun()
+            
             # Export/Import Kanban
+            st.markdown("### Import/Export")
             col_exp, col_imp = st.columns(2)
             with col_exp:
-                if st.button("📤 Export Kanban", use_container_width=True):
+                if st.button("📤 Export", use_container_width=True):
                     buffer = export_kanban_to_excel()
                     st.download_button(
-                        label="Download Kanban.xlsx",
+                        label="Download Excel",
                         data=buffer,
                         file_name="kanban_board.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -586,16 +740,15 @@ def main():
             
             with col_imp:
                 kanban_file = st.file_uploader(
-                    "Import Kanban",
+                    "Import from Excel",
                     type=['xlsx'],
                     key="kanban_import",
                     label_visibility="collapsed"
                 )
                 if kanban_file:
                     if import_kanban_from_excel(kanban_file):
-                        st.success("Kanban imported!")
-                    else:
-                        st.error("Failed to import Kanban")
+                        st.success("Kanban imported successfully!")
+                        st.rerun()
             
             # Quick stats
             st.markdown("---")
@@ -639,7 +792,7 @@ def render_upload_page():
             sheet_names = pd.ExcelFile(uploaded_file).sheet_names
             st.write(f"**Sheets:** {', '.join(sheet_names)}")
             
-            selected_sheet = st.selectbox("Pilih sheet untuk preview:", sheet_names)
+            selected_sheet = st.selectbox("Pilih sheet untuk preview:", sheet_names, key="sheet_preview")
             if selected_sheet:
                 try:
                     df_preview = pd.read_excel(uploaded_file, sheet_name=selected_sheet, nrows=5)
@@ -712,7 +865,7 @@ def render_upload_page():
             st.markdown("Download template untuk format yang benar:")
             
             # Buat template sederhana
-            if st.button("Buat Template Excel"):
+            if st.button("Buat Template Excel", key="create_template"):
                 wb = openpyxl.Workbook()
                 
                 # Sheet Poli Asal
@@ -833,16 +986,19 @@ def render_analytics_page():
         reverse=True
     )[:10]  # Ambil 10 terbaru
     
-    for task in all_tasks_sorted:
-        with st.container():
-            st.markdown(f"""
-            <div style="padding: 10px; margin-bottom: 10px; border-left: 4px solid {KANBAN_COLORS[task['column']]}; 
-                     background-color: white; border-radius: 5px;">
-                <strong>#{task['id']} - {task['title']}</strong><br>
-                <small>Status: {task['column'].replace('_', ' ').title()} • 
-                Updated: {task.get('last_updated', 'N/A')}</small>
-            </div>
-            """, unsafe_allow_html=True)
+    if all_tasks_sorted:
+        for task in all_tasks_sorted:
+            with st.container():
+                st.markdown(f"""
+                <div style="padding: 10px; margin-bottom: 10px; border-left: 4px solid {KANBAN_COLORS[task['column']]}; 
+                         background-color: white; border-radius: 5px;">
+                    <strong>#{task['id']} - {task['title']}</strong><br>
+                    <small>Status: {task['column'].replace('_', ' ').title()} • 
+                    Updated: {task.get('last_updated', 'N/A')}</small>
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.info("No recent activity")
 
 def render_settings_page():
     """Halaman settings"""
@@ -874,7 +1030,7 @@ def render_settings_page():
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🔄 Reset Kanban Board", use_container_width=True):
+            if st.button("🔄 Reset Kanban Board", use_container_width=True, key="reset_kanban"):
                 st.session_state.kanban_tasks = {
                     "todo": [], "in_progress": [], "review": [], "done": []
                 }
@@ -883,7 +1039,7 @@ def render_settings_page():
                 st.rerun()
         
         with col2:
-            if st.button("🗑️ Clear All Data", use_container_width=True):
+            if st.button("🗑️ Clear All Data", use_container_width=True, key="clear_all"):
                 st.session_state.kanban_tasks = {
                     "todo": [], "in_progress": [], "review": [], "done": []
                 }
@@ -895,7 +1051,7 @@ def render_settings_page():
                 st.rerun()
     
     # Export settings
-    if st.button("💾 Export All Settings", use_container_width=True):
+    if st.button("💾 Export All Settings", use_container_width=True, key="export_settings"):
         settings = {
             "kanban_settings": {
                 "auto_create": True,
