@@ -2,5 +2,6 @@ streamlit
 pandas
 numpy
 openpyxl
-streamlit-sortables
 plotly
+# Optional but recommended for drag & drop Kanban
+streamlit-sortables
