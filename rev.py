@@ -9,6 +9,9 @@ import re
 import seaborn as sns
 import matplotlib.pyplot as plt
 import altair as alt
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # Konfigurasi halaman
 st.set_page_config(
@@ -438,7 +441,7 @@ def main():
                 if selected_sheet:
                     try:
                         df_preview = pd.read_excel(uploaded_file, sheet_name=selected_sheet, nrows=10)
-                        st.dataframe(df_preview, use_container_width=True)
+                        st.dataframe(df_preview, width='stretch')
                     except:
                         st.warning(f"Tidak dapat membaca sheet {selected_sheet}")
             
@@ -505,7 +508,7 @@ def main():
             if selected_hari:
                 filtered_df = filtered_df[filtered_df['HARI'].isin(selected_hari)]
             
-            st.dataframe(filtered_df, use_container_width=True)
+            st.dataframe(filtered_df, width='stretch')
             
             # Statistik
             col1, col2, col3 = st.columns(3)
@@ -524,6 +527,7 @@ def main():
             fig, ax = plt.subplots(figsize=(12, 8))
             sns.heatmap(heatmap_data, cmap='coolwarm', ax=ax, annot=True, fmt=".0f")
             ax.set_xticklabels(TIME_SLOTS_STR, rotation=45)
+            ax.set_yticks(range(len(filtered_df)))
             ax.set_yticklabels(filtered_df['DOKTER'], rotation=0)
             st.pyplot(fig)
             
