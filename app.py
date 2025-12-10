@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import io
 import json
+import os
 
 st.set_page_config(page_title="Jadwal Poli (Streamlit Full)", layout="wide")
 st.title("📅 Jadwal Poli — Streamlit Full")
@@ -18,141 +19,6 @@ TIME_SLOTS = [
 ]
 
 DAYS_ORDER = ["Senin", "Selasa", "Rabu", "Kamis", "Jum'at"]
-
-# ---------------------------
-# Helpers: time normalization & expansion
-# ---------------------------
-def _normalize_time_token(token: str) -> str:
-    if token is None:
-        return ""
-    t = str(token).strip()
-    if t == "" or t.lower() in ["nan", "none"]:
-        return ""
-    t = t.replace(".", ":").replace("–", "-").replace("—", "-")
-    t = t.lower().replace("am", "").replace("pm", "").strip()
-    if ":" not in t:
-        if t.isdigit():
-            return t.zfill(2) + ":00"
-        else:
-            return ""
-    parts = t.split(":")
-    if len(parts) == 2:
-        hh = parts[0].zfill(2)
-        mm = parts[1].zfill(2)
-        try:
-            mm_i = int(mm)
-            if mm_i < 0 or mm_i > 59:
-                return ""
-        except:
-            return ""
-        return f"{hh}:{mm}"
-    return ""
-
-def expand_range_safe(range_str: str, interval_minutes: int = 30):
-    if not isinstance(range_str, str) or range_str.strip() == "":
-        return []
-    text = range_str.replace(" ", "")
-    parts = None
-    for sep in ["-", "–", "—", "to"]:
-        if sep in text:
-            parts = text.split(sep)
-            break
-    if parts is None:
-        tok = _normalize_time_token(text)
-        return [tok] if tok else []
-    if len(parts) < 2:
-        return []
-    start_tok = _normalize_time_token(parts[0])
-    end_tok = _normalize_time_token(parts[1])
-    if not start_tok or not end_tok:
-        return []
-    fmt = "%H:%M"
-    try:
-        sdt = datetime.strptime(start_tok, fmt)
-        edt = datetime.strptime(end_tok, fmt)
-    except:
-        return []
-    if edt < sdt:
-        return []
-    slots = []
-    cur = sdt
-    while cur <= edt:
-        slots.append(cur.strftime("%H:%M"))
-        cur += timedelta(minutes=interval_minutes)
-    return slots
-
-# ---------------------------
-# NEW: Convert to Excel-like format (Pivot table)
-# ---------------------------
-def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
-    """Create Excel-like view with POLI, JENIS, HARI, DOKTER as rows and TIME_SLOTS as columns"""
-    
-    # Create a copy and ensure time slots are standardized
-    df = df_input.copy()
-    
-    # Standardize time slots to match TIME_SLOTS format
-    def standardize_time(time_str):
-        try:
-            t = datetime.strptime(str(time_str).strip(), "%H:%M")
-            # Round to nearest 30 minutes
-            minutes = t.minute
-            if minutes < 15:
-                minutes = 0
-            elif minutes < 45:
-                minutes = 30
-            else:
-                t += timedelta(hours=1)
-                minutes = 0
-            return t.replace(minute=minutes).strftime("%H:%M")
-        except:
-            return str(time_str).strip()
-    
-    df["Jam"] = df["Jam"].apply(standardize_time)
-    
-    # Filter only valid time slots
-    df = df[df["Jam"].isin(TIME_SLOTS)]
-    
-    # Create a pivot-like structure
-    records = []
-    
-    # Group by POLI, JENIS POLI, HARI, DOKTER
-    grouped = df.groupby(["Poli", "Jenis", "Hari", "Dokter"])
-    
-    for (poli, jenis, hari, dokter), group in grouped:
-        # Create a base record
-        record = {
-            "POLI ASAL": poli,
-            "JENIS POLI": jenis,
-            "HARI": hari,
-            "DOKTER": dokter
-        }
-        
-        # Initialize all time slots as empty
-        for slot in TIME_SLOTS:
-            record[slot] = ""
-        
-        # Fill in the time slots
-        for _, row in group.iterrows():
-            time_slot = row["Jam"]
-            kode = row["Kode"]
-            record[time_slot] = kode
-        
-        records.append(record)
-    
-    # Convert to DataFrame
-    result_df = pd.DataFrame(records)
-    
-    # Order columns: POLI, JENIS, HARI, DOKTER, then time slots
-    ordered_cols = ["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS
-    result_df = result_df[ordered_cols]
-    
-    # Sort by POLI, JENIS, HARI, DOKTER
-    result_df = result_df.sort_values(["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"])
-    
-    # Reset index
-    result_df = result_df.reset_index(drop=True)
-    
-    return result_df
 
 # ---------------------------
 # Session state: history (undo/redo), kanban_state
@@ -188,160 +54,280 @@ def redo():
 # Upload input
 # ---------------------------
 st.sidebar.header("Upload / Template")
-uploaded = st.sidebar.file_uploader("Upload Excel (sheet) or CSV with columns: Hari, Range, Poli, Jenis, Dokter", type=["xlsx","csv"])
+uploaded = st.sidebar.file_uploader("Upload Excel Jadwal", type=["xlsx","xls"])
 
-# Try to load the sample file if no upload
 if uploaded is None:
-    st.info("Upload file Excel/CSV untuk mulai.")
-    
-    # Try to load sample data
+    st.info("Upload file Excel jadwal untuk mulai.")
+    st.stop()
+
+# Function to parse Excel format from your file
+def parse_excel_format(uploaded_file):
+    """Parse Excel format from the uploaded file"""
     try:
-        # Load the sample data from the Excel file provided
-        sample_df = pd.read_excel("view jadwal.xlsx", sheet_name="Jadwal")
-        raw = sample_df
-        st.success("✅ Menggunakan data sample dari file 'view jadwal.xlsx'")
-    except:
-        st.stop()
-else:
-    # read file tolerant
-    @st.cache_data
-    def load_raw(bytes_io, fname):
-        try:
-            if fname.lower().endswith(".csv"):
-                return pd.read_csv(io.BytesIO(bytes_io))
-            else:
-                xls = pd.ExcelFile(io.BytesIO(bytes_io))
-                sheet = "Jadwal" if "Jadwal" in xls.sheet_names else xls.sheet_names[0]
-                df = xls.parse(sheet)
-                df.columns = [str(c).strip() for c in df.columns]
-                return df
-        except Exception as e:
-            st.error(f"Gagal membaca file: {e}")
-            return pd.DataFrame()
-
-    raw = load_raw(uploaded.getvalue(), uploaded.name)
-
-# Determine column mapping based on data structure
-cols = raw.columns.tolist()
-
-# Check if this is the Excel format (with time slot columns)
-if "POLI ASAL" in cols or "Poli" in cols:
-    # This is already in Excel format, parse it differently
-    st.info("📊 Format Excel terdeteksi, memproses data...")
-    
-    # Rename columns to standard names
-    column_mapping = {}
-    for col in cols:
-        if "POLI" in col.upper() or "Poli" in col:
-            column_mapping[col] = "Poli"
-        elif "JENIS" in col.upper() or "Jenis" in col:
-            column_mapping[col] = "Jenis"
-        elif "HARI" in col.upper() or "Hari" in col:
-            column_mapping[col] = "Hari"
-        elif "DOKTER" in col.upper() or "Dokter" in col:
-            column_mapping[col] = "Dokter"
-        elif any(time in col for time in ["07:", "08:", "09:", "10:", "11:", "12:", "13:", "14:"]):
-            # This is a time slot column, keep it as is
-            pass
-    
-    # If we have Excel format, parse it differently
-    expanded = []
-    
-    # Find the actual column names
-    poli_col = next((c for c in cols if "POLI" in c.upper() or "Poli" in c), cols[0])
-    jenis_col = next((c for c in cols if "JENIS" in c.upper() or "Jenis" in c), cols[1])
-    hari_col = next((c for c in cols if "HARI" in c.upper() or "Hari" in c), cols[2])
-    dokter_col = next((c for c in cols if "DOKTER" in c.upper() or "Dokter" in c), cols[3])
-    
-    # Get time slot columns
-    time_cols = [c for c in cols if any(time in c for time in ["07:", "08:", "09:", "10:", "11:", "12:", "13:", "14:"])]
-    
-    for _, row in raw.iterrows():
-        poli = str(row[poli_col]).strip()
-        jenis = str(row[jenis_col]).strip()
-        hari = str(row[hari_col]).strip()
-        dokter = str(row[dokter_col]).strip()
+        # Read the Excel file
+        xls = pd.ExcelFile(uploaded_file)
         
-        # Check each time slot
-        for time_col in time_cols:
-            kode = str(row[time_col]).strip()
-            if kode and kode.upper() in ["R", "E"]:
-                expanded.append({
-                    "Hari": hari,
-                    "Jam": time_col,
-                    "Poli": poli,
-                    "Jenis": jenis,
-                    "Dokter": dokter,
-                    "Kode": kode.upper()
-                })
-    
-    if expanded:
-        df = pd.DataFrame(expanded)
-        # Set Jenis based on Kode
-        df["Jenis"] = df["Kode"].apply(lambda x: "Reguler" if x == "R" else "Eksekutif")
-    else:
-        st.error("Tidak ada data jadwal yang ditemukan.")
-        st.stop()
-else:
-    # Original CSV format processing
-    col_map = {
-        "Hari": ["Hari","Day","hari","day"],
-        "Range": ["Range","Jam","Waktu","Time","range","jam","waktu","time"],
-        "Poli": ["Poli","Poliklinik","Unit","poli","poliklinik","unit"],
-        "Jenis": ["Jenis","Type","Kategori","jenis","type","kategori"],
-        "Dokter": ["Dokter","Nama Dokter","Doctor","dokter","nama dokter","doctor"]
-    }
-    
-    def find_col(cols, candidates):
-        for c in candidates:
-            if c in cols:
-                return c
+        # Try to read sheet "Jadwal" or first sheet
+        sheet_name = "Jadwal" if "Jadwal" in xls.sheet_names else xls.sheet_names[0]
+        df = xls.parse(sheet_name, header=0)
+        
+        # Display raw data for debugging
+        st.sidebar.write(f"📊 Sheet: {sheet_name}")
+        st.sidebar.write(f"📋 Kolom: {list(df.columns)}")
+        
+        # Check the structure of the data
+        if len(df) > 0:
+            st.sidebar.write("🔍 Data preview (5 rows):")
+            st.sidebar.dataframe(df.head(), use_container_width=True)
+        
+        # Clean column names
+        df.columns = [str(col).strip() for col in df.columns]
+        
+        # Find the correct column names
+        # Look for common column patterns in your Excel file
+        poli_col = None
+        jenis_col = None
+        hari_col = None
+        dokter_col = None
+        
+        for col in df.columns:
+            col_lower = col.lower()
+            if "poli" in col_lower:
+                poli_col = col
+            elif "jenis" in col_lower or "type" in col_lower:
+                jenis_col = col
+            elif "hari" in col_lower or "day" in col_lower:
+                hari_col = col
+            elif "dokter" in col_lower or "doctor" in col_lower:
+                dokter_col = col
+        
+        # If we couldn't find the columns, use the first few columns
+        if not hari_col and len(df.columns) > 0:
+            hari_col = df.columns[0] if "Hari" in df.columns[0] else "Hari"
+        
+        if not poli_col and len(df.columns) > 1:
+            poli_col = df.columns[1] if "Poli" in df.columns[1] else "Poli"
+        
+        if not jenis_col and len(df.columns) > 2:
+            jenis_col = df.columns[2] if "Jenis" in df.columns[2] else "Jenis"
+        
+        if not dokter_col and len(df.columns) > 3:
+            dokter_col = df.columns[3] if "Dokter" in df.columns[3] else "Dokter"
+        
+        # Find time slot columns (columns with time patterns)
+        time_columns = []
+        for col in df.columns:
+            if any(time_str in str(col) for time_str in ["07:", "08:", "09:", "10:", "11:", "12:", "13:", "14:", "15:"]):
+                time_columns.append(col)
+            elif ":" in str(col) and len(str(col)) <= 5:  # Time format like "07:30"
+                time_columns.append(col)
+        
+        # If no time columns found, check for numeric time representations
+        if not time_columns:
+            # Check if there are columns that might be times
+            for col in df.columns:
+                try:
+                    # Try to parse as time
+                    pd.to_datetime(col, format='%H:%M')
+                    time_columns.append(col)
+                except:
+                    continue
+        
+        # If still no time columns, check columns after the first 4
+        if not time_columns and len(df.columns) > 4:
+            time_columns = df.columns[4:].tolist()
+        
+        st.sidebar.write(f"⏰ Kolom waktu ditemukan: {len(time_columns)}")
+        
+        if not time_columns:
+            st.error("Tidak ditemukan kolom waktu dalam file Excel!")
+            return None
+        
+        # Now parse the data
+        expanded_data = []
+        
+        for _, row in df.iterrows():
+            hari = str(row.get(hari_col, "")).strip()
+            poli = str(row.get(poli_col, "")).strip()
+            jenis = str(row.get(jenis_col, "")).strip()
+            dokter = str(row.get(dokter_col, "")).strip()
+            
+            # Skip empty rows
+            if not hari or not dokter or pd.isna(hari) or pd.isna(dokter):
+                continue
+            
+            # Check each time column
+            for time_col in time_columns:
+                value = str(row.get(time_col, "")).strip()
+                
+                # Check if this cell has a schedule (R or E)
+                if value and value.upper() in ["R", "E"]:
+                    expanded_data.append({
+                        "Hari": hari,
+                        "Jam": str(time_col).strip(),
+                        "Poli": poli,
+                        "Jenis": jenis if jenis else ("Reguler" if value.upper() == "R" else "Eksekutif"),
+                        "Dokter": dokter,
+                        "Kode": value.upper()
+                    })
+        
+        if not expanded_data:
+            # Try alternative parsing - maybe the data is in a different format
+            st.warning("Mencoba metode parsing alternatif...")
+            
+            # Try to melt the dataframe
+            if len(df.columns) >= 5:
+                # Assume first 4 columns are metadata, rest are time slots
+                id_vars = df.columns[:4].tolist()
+                value_vars = df.columns[4:].tolist()
+                
+                melted_df = pd.melt(df, 
+                                   id_vars=id_vars,
+                                   value_vars=value_vars,
+                                   var_name="Jam",
+                                   value_name="Kode")
+                
+                # Filter only rows with R or E
+                melted_df = melted_df[melted_df["Kode"].astype(str).str.upper().isin(["R", "E"])]
+                
+                if not melted_df.empty:
+                    # Rename columns
+                    column_map = {}
+                    for i, col in enumerate(id_vars):
+                        if i == 0: column_map[col] = "Hari"
+                        elif i == 1: column_map[col] = "Poli"
+                        elif i == 2: column_map[col] = "Jenis"
+                        elif i == 3: column_map[col] = "Dokter"
+                    
+                    melted_df = melted_df.rename(columns=column_map)
+                    
+                    # Convert to list of dicts
+                    expanded_data = melted_df.to_dict('records')
+        
+        if not expanded_data:
+            st.error("Tidak ada data jadwal yang ditemukan dalam file!")
+            st.write("Struktur file yang diharapkan:")
+            st.write("- Kolom 1: Hari (Senin, Selasa, dll)")
+            st.write("- Kolom 2: Poli (Poli Anak, Poli Bedah, dll)")
+            st.write("- Kolom 3: Jenis (Reguler, Eksekutif/Poleks)")
+            st.write("- Kolom 4: Dokter (Nama dokter)")
+            st.write("- Kolom 5+: Waktu (07:30, 08:00, dll) dengan nilai R atau E")
+            return None
+        
+        return pd.DataFrame(expanded_data)
+        
+    except Exception as e:
+        st.error(f"Error parsing Excel file: {str(e)}")
         return None
+
+# Parse the uploaded file
+df = parse_excel_format(uploaded)
+
+if df is None or df.empty:
+    st.error("Tidak dapat memproses file Excel. Pastikan format file sesuai.")
+    st.stop()
+
+# Ensure we have the required columns
+required_cols = ["Hari", "Jam", "Poli", "Jenis", "Dokter", "Kode"]
+for col in required_cols:
+    if col not in df.columns:
+        st.error(f"Kolom '{col}' tidak ditemukan dalam data!")
+        st.stop()
+
+# Clean and standardize the data
+# Normalize Jenis based on Kode
+df["Jenis"] = df["Kode"].apply(lambda x: "Reguler" if x == "R" else "Eksekutif")
+
+# Clean time format
+def clean_time(time_str):
+    try:
+        # Remove any whitespace
+        time_str = str(time_str).strip()
+        
+        # Handle different time formats
+        if ":" in time_str:
+            parts = time_str.split(":")
+            if len(parts) == 2:
+                hours = parts[0].zfill(2)
+                minutes = parts[1].zfill(2)
+                return f"{hours}:{minutes}"
+        
+        # Try to parse as datetime
+        dt = pd.to_datetime(time_str, errors='coerce')
+        if not pd.isna(dt):
+            return dt.strftime("%H:%M")
+        
+        return time_str
+    except:
+        return time_str
+
+df["Jam"] = df["Jam"].apply(clean_time)
+
+# Filter only valid time slots
+df = df[df["Jam"].isin(TIME_SLOTS)]
+
+if df.empty:
+    st.error("Tidak ada data dengan slot waktu yang valid (07:00-14:30).")
+    st.stop()
+
+# ---------------------------
+# NEW: Convert to Excel-like format (Pivot table)
+# ---------------------------
+def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
+    """Create Excel-like view with POLI, JENIS, HARI, DOKTER as rows and TIME_SLOTS as columns"""
     
-    Hari_col = find_col(cols, col_map["Hari"])
-    Range_col = find_col(cols, col_map["Range"])
-    Poli_col = find_col(cols, col_map["Poli"])
-    Jenis_col = find_col(cols, col_map["Jenis"])
-    Dokter_col = find_col(cols, col_map["Dokter"])
-
-    if not (Hari_col and Range_col and Poli_col and Jenis_col and Dokter_col):
-        st.error("Kolom input tidak lengkap. Pastikan file memiliki kolom: Hari, Range, Poli, Jenis, Dokter (varian nama didukung).")
-        st.write("Terbaca kolom:", cols)
-        st.stop()
-
-    # ---------------------------
-    # Expand ranges -> slots
-    # ---------------------------
-    expanded = []
-    for _, r in raw.iterrows():
-        hari = str(r.get(Hari_col)).strip()
-        rng = r.get(Range_col)
-        poli = str(r.get(Poli_col)).strip()
-        jenis = str(r.get(Jenis_col)).strip()
-        dokter = str(r.get(Dokter_col)).strip()
-        if not hari or pd.isna(rng) or not poli or not jenis or not dokter:
-            continue
-        slots = expand_range_safe(str(rng), interval_minutes=30)
-        if not slots:
-            tok = _normalize_time_token(str(rng))
-            if tok:
-                slots = [tok]
-        for s in slots:
-            expanded.append({"Hari":hari, "Jam":s, "Poli":poli, "Jenis":jenis, "Dokter":dokter})
-
-    if len(expanded) == 0:
-        st.error("Tidak ada slot terbentuk. Periksa format Range.")
-        st.stop()
-
-    df = pd.DataFrame(expanded)
-    # normalize Jenis
-    df["Jenis"] = df["Jenis"].astype(str).str.strip().replace({
-        "reguler":"Reguler", "regular":"Reguler", 
-        "eksekutif":"Eksekutif", "executive":"Eksekutif", 
-        "poleks":"Eksekutif", "POLEKS":"Eksekutif"
-    })
-    # Kode
-    df["Kode"] = df["Jenis"].apply(lambda x: "R" if str(x).lower()=="reguler" else "E")
+    # Create a copy and ensure time slots are standardized
+    df = df_input.copy()
+    
+    # Create a pivot-like structure
+    records = []
+    
+    # Group by POLI, JENIS POLI, HARI, DOKTER
+    grouped = df.groupby(["Poli", "Jenis", "Hari", "Dokter"])
+    
+    for (poli, jenis, hari, dokter), group in grouped:
+        # Create a base record
+        record = {
+            "POLI ASAL": poli,
+            "JENIS POLI": jenis,
+            "HARI": hari,
+            "DOKTER": dokter
+        }
+        
+        # Initialize all time slots as empty
+        for slot in TIME_SLOTS:
+            record[slot] = ""
+        
+        # Fill in the time slots
+        for _, row in group.iterrows():
+            time_slot = row["Jam"]
+            kode = row["Kode"]
+            record[time_slot] = kode
+        
+        records.append(record)
+    
+    # Convert to DataFrame
+    result_df = pd.DataFrame(records)
+    
+    # Order columns: POLI, JENIS, HARI, DOKTER, then time slots
+    ordered_cols = ["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS
+    # Only include columns that exist
+    ordered_cols = [col for col in ordered_cols if col in result_df.columns or col in TIME_SLOTS]
+    
+    # Reorder and add missing columns
+    for col in TIME_SLOTS:
+        if col not in result_df.columns:
+            result_df[col] = ""
+    
+    result_df = result_df[["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS]
+    
+    # Sort by POLI, JENIS, HARI, DOKTER
+    result_df = result_df.sort_values(["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"])
+    
+    # Reset index
+    result_df = result_df.reset_index(drop=True)
+    
+    return result_df
 
 # Create Excel-like view
 excel_view_df = create_excel_like_view(df)
@@ -371,6 +357,21 @@ def compute_status(df_in):
     return d
 
 df = compute_status(df)
+
+# ---------------------------
+# Display success message and data summary
+# ---------------------------
+st.success(f"✅ File berhasil diproses! Data loaded: {len(df)} jadwal")
+
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Total Hari", df["Hari"].nunique())
+with col2:
+    st.metric("Total Poli", df["Poli"].nunique())
+with col3:
+    st.metric("Total Dokter", df["Dokter"].nunique())
+with col4:
+    st.metric("Jadwal Reguler", len(df[df["Kode"] == "R"]))
 
 # ---------------------------
 # UI: Filters & summary
@@ -1161,17 +1162,3 @@ try:
                 )
 except Exception as e:
     st.warning(f"Tidak dapat menampilkan statistik per Poli: {e}")
-
-# Add JavaScript to handle drag drop events from iframe
-st.markdown("""
-<script>
-// Listen for drag drop events from iframe
-window.addEventListener('message', function(event) {
-    if (event.data.type === 'KANBAN_DRAG_DROP') {
-        // Send to Streamlit
-        const data = JSON.stringify(event.data.data);
-        window.parent.streamlitBridge.sendMessage('kanban_drag', data);
-    }
-});
-</script>
-""", unsafe_allow_html=True)
