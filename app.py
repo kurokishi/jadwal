@@ -463,6 +463,53 @@ with summary_cols[3]:
     st.metric("Slot Eksekutif (E)", eksekutif_count)
 
 # ---------------------------
+# Dashboard & summary
+# ---------------------------
+st.header("📊 Dashboard Ringkasan")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total slot", len(df))
+c2.metric("Total dokter unik", df["Dokter"].nunique())
+c3.metric("Total Poli", df["Poli"].nunique())
+c4.metric("Slot unik", df[["Hari","Jam"]].drop_duplicates().shape[0])
+
+# FIXED: Heatmap dengan pivot_table untuk handle duplicates
+st.subheader("Heatmap (Jam × Hari)")
+try:
+    # Gunakan pivot_table dengan aggregation function 'size'
+    summary = df.groupby(["Hari","Jam"]).size().reset_index(name="Jumlah")
+    
+    # Ensure proper ordering
+    if not summary.empty:
+        # Convert to categorical for proper ordering
+        if "Hari" in summary.columns:
+            summary["Hari"] = pd.Categorical(summary["Hari"], categories=DAYS_ORDER, ordered=True)
+        if "Jam" in summary.columns:
+            summary["Jam"] = pd.Categorical(summary["Jam"], categories=TIME_SLOTS, ordered=True)
+        
+        summary = summary.sort_values(["Hari", "Jam"])
+        
+        # Gunakan pivot_table dengan aggfunc='first' karena data sudah di-aggregate
+        pivot = summary.pivot_table(index="Jam", columns="Hari", values="Jumlah", aggfunc='first').fillna(0)
+        
+        # Sort index and columns
+        pivot = pivot.reindex(index=TIME_SLOTS, columns=DAYS_ORDER, fill_value=0)
+        
+        import plotly.express as px
+        fig = px.imshow(pivot, 
+                        labels=dict(x="Hari", y="Jam", color="Jumlah Dokter"), 
+                        color_continuous_scale="Blues",
+                        aspect="auto")
+        fig.update_xaxes(side="top")
+        st.plotly_chart(fig, width='stretch', height=400)
+    else:
+        st.info("Tidak ada data untuk ditampilkan dalam heatmap.")
+except Exception as e:
+    st.warning(f"Tidak dapat menampilkan heatmap: {e}")
+    # Fallback: tampilkan tabel sederhana
+    st.write("Summary data:")
+    st.dataframe(summary)
+
+# ---------------------------
 # Original Detailed View (Optional - can be collapsed)
 # ---------------------------
 with st.expander("📋 Tampilan Detail (Original)", expanded=False):
@@ -480,38 +527,8 @@ with st.expander("📋 Tampilan Detail (Original)", expanded=False):
             return ["background-color:#dff2d8;color:black"]*len(row)
         return ["background-color:#e8f0ff;color:black"]*len(row)
 
-    st.dataframe(
-        filtered.sort_values(["Hari","Jam","Poli","Dokter"]).reset_index(drop=True).style.apply(style_rows, axis=1), 
-        use_container_width=True,
-        height=400
-    )
-
-# ---------------------------
-# Dashboard & summary
-# ---------------------------
-st.header("📊 Dashboard Ringkasan")
-c1,c2,c3,c4 = st.columns(4)
-c1.metric("Total slot", len(df))
-c2.metric("Total dokter unik", df["Dokter"].nunique())
-c3.metric("Total Poli", df["Poli"].nunique())
-c4.metric("Slot unik", df[["Hari","Jam"]].drop_duplicates().shape[0])
-
-# Heatmap
-st.subheader("Heatmap (Jam × Hari)")
-summary = df.groupby(["Hari","Jam"]).size().reset_index(name="Jumlah")
-# Ensure proper ordering
-summary["Hari"] = pd.Categorical(summary["Hari"], categories=DAYS_ORDER, ordered=True)
-summary["Jam"] = pd.Categorical(summary["Jam"], categories=TIME_SLOTS, ordered=True)
-summary = summary.sort_values(["Hari", "Jam"])
-
-pivot = summary.pivot(index="Jam", columns="Hari", values="Jumlah").fillna(0).sort_index()
-import plotly.express as px
-fig = px.imshow(pivot, 
-                labels=dict(x="Hari", y="Jam", color="Jumlah Dokter"), 
-                color_continuous_scale="Blues",
-                aspect="auto")
-fig.update_xaxes(side="top")
-st.plotly_chart(fig, use_container_width=True, height=400)
+    styled_df = filtered.sort_values(["Hari","Jam","Poli","Dokter"]).reset_index(drop=True).style.apply(style_rows, axis=1)
+    st.dataframe(styled_df, width='stretch', height=400)
 
 # ---------------------------
 # Kanban editor (per selected_day) - Updated
@@ -760,20 +777,24 @@ st.markdown("---")
 st.subheader("📋 Statistik Cepat")
 
 # Create a summary by Poli
-poli_summary = df.groupby(["Poli", "Jenis"]).size().reset_index(name="Jumlah Slot")
-poli_pivot = poli_summary.pivot(index="Poli", columns="Jenis", values="Jumlah Slot").fillna(0)
-
-# Display as metrics
-st.write("**Jumlah Slot per Poli:**")
-cols = st.columns(min(4, len(poli_pivot)))
-for idx, (poli, row) in enumerate(poli_pivot.iterrows()):
-    with cols[idx % len(cols)]:
-        total = row.sum()
-        reguler = row.get("Reguler", 0)
-        eksekutif = row.get("Eksekutif", 0)
+try:
+    poli_summary = df.groupby(["Poli", "Jenis"]).size().reset_index(name="Jumlah Slot")
+    if not poli_summary.empty:
+        poli_pivot = poli_summary.pivot(index="Poli", columns="Jenis", values="Jumlah Slot").fillna(0)
         
-        st.metric(
-            label=f"🩺 {poli}",
-            value=int(total),
-            delta=f"R:{int(reguler)} E:{int(eksekutif)}"
-        )
+        # Display as metrics
+        st.write("**Jumlah Slot per Poli:**")
+        cols = st.columns(min(4, len(poli_pivot)))
+        for idx, (poli, row) in enumerate(poli_pivot.iterrows()):
+            with cols[idx % len(cols)]:
+                total = row.sum()
+                reguler = row.get("Reguler", 0)
+                eksekutif = row.get("Eksekutif", 0)
+                
+                st.metric(
+                    label=f"🩺 {poli}",
+                    value=int(total),
+                    delta=f"R:{int(reguler)} E:{int(eksekutif)}"
+                )
+except Exception as e:
+    st.warning(f"Tidak dapat menampilkan statistik per Poli: {e}")
