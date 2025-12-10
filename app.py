@@ -4,21 +4,162 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import io
-import json
-import os
+from typing import Dict, List
+
+# Optional drag & drop library
+try:
+    from sortables import sort_table
+    DRAG_AVAILABLE = True
+except Exception:
+    DRAG_AVAILABLE = False
 
 st.set_page_config(page_title="Jadwal Poli (Streamlit Full)", layout="wide")
-st.title("📅 Jadwal Poli — Streamlit Full")
+st.title("📅 Jadwal Poli — Streamlit Full (Offline)")
 
 # ---------------------------
 # Constants for Excel-like view
 # ---------------------------
 TIME_SLOTS = [
-    "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", 
+    "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", 
     "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30"
 ]
 
 DAYS_ORDER = ["Senin", "Selasa", "Rabu", "Kamis", "Jum'at"]
+
+# ---------------------------
+# Helpers: time normalization & expansion
+# ---------------------------
+def _normalize_time_token(token: str) -> str:
+    if token is None:
+        return ""
+    t = str(token).strip()
+    if t == "" or t.lower() in ["nan", "none"]:
+        return ""
+    t = t.replace(".", ":").replace("–", "-").replace("—", "-")
+    t = t.lower().replace("am", "").replace("pm", "").strip()
+    if ":" not in t:
+        if t.isdigit():
+            return t.zfill(2) + ":00"
+        else:
+            return ""
+    parts = t.split(":")
+    if len(parts) == 2:
+        hh = parts[0].zfill(2)
+        mm = parts[1].zfill(2)
+        try:
+            mm_i = int(mm)
+            if mm_i < 0 or mm_i > 59:
+                return ""
+        except:
+            return ""
+        return f"{hh}:{mm}"
+    return ""
+
+def expand_range_safe(range_str: str, interval_minutes: int = 30):
+    if not isinstance(range_str, str) or range_str.strip() == "":
+        return []
+    text = range_str.replace(" ", "")
+    parts = None
+    for sep in ["-", "–", "—", "to"]:
+        if sep in text:
+            parts = text.split(sep)
+            break
+    if parts is None:
+        tok = _normalize_time_token(text)
+        return [tok] if tok else []
+    if len(parts) < 2:
+        return []
+    start_tok = _normalize_time_token(parts[0])
+    end_tok = _normalize_time_token(parts[1])
+    if not start_tok or not end_tok:
+        return []
+    fmt = "%H:%M"
+    try:
+        sdt = datetime.strptime(start_tok, fmt)
+        edt = datetime.strptime(end_tok, fmt)
+    except:
+        return []
+    if edt < sdt:
+        return []
+    slots = []
+    cur = sdt
+    while cur <= edt:
+        slots.append(cur.strftime("%H:%M"))
+        cur += timedelta(minutes=interval_minutes)
+    return slots
+
+# ---------------------------
+# NEW: Convert to Excel-like format (Pivot table)
+# ---------------------------
+def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
+    """Create Excel-like view with POLI, JENIS, HARI, DOKTER as rows and TIME_SLOTS as columns"""
+    
+    # Create a copy and ensure time slots are standardized
+    df = df_input.copy()
+    
+    # Standardize time slots to match TIME_SLOTS format
+    def standardize_time(time_str):
+        try:
+            t = datetime.strptime(str(time_str).strip(), "%H:%M")
+            # Round to nearest 30 minutes
+            minutes = t.minute
+            if minutes < 15:
+                minutes = 0
+            elif minutes < 45:
+                minutes = 30
+            else:
+                t += timedelta(hours=1)
+                minutes = 0
+            return t.replace(minute=minutes).strftime("%H:%M")
+        except:
+            return str(time_str).strip()
+    
+    df["Jam"] = df["Jam"].apply(standardize_time)
+    
+    # Filter only valid time slots
+    df = df[df["Jam"].isin(TIME_SLOTS)]
+    
+    # Create a pivot-like structure
+    records = []
+    
+    # Group by POLI, JENIS POLI, HARI, DOKTER
+    grouped = df.groupby(["Poli", "Jenis", "Hari", "Dokter"])
+    
+    for (poli, jenis, hari, dokter), group in grouped:
+        # Create a base record
+        record = {
+            "POLI ASAL": poli,
+            "JENIS POLI": jenis,
+            "HARI": hari,
+            "DOKTER": dokter
+        }
+        
+        # Initialize all time slots as empty
+        for slot in TIME_SLOTS:
+            record[slot] = ""
+        
+        # Fill in the time slots
+        for _, row in group.iterrows():
+            time_slot = row["Jam"]
+            kode = row["Kode"]
+            record[time_slot] = kode
+        
+        records.append(record)
+    
+    # Convert to DataFrame
+    result_df = pd.DataFrame(records)
+    
+    # Order columns: POLI, JENIS, HARI, DOKTER, then time slots
+    ordered_cols = ["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS
+    result_df = result_df[ordered_cols]
+    
+    # Sort by POLI, JENIS, HARI, DOKTER
+    result_df = result_df.sort_values(["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"])
+    
+    # Reset index
+    result_df = result_df.reset_index(drop=True)
+    
+    return result_df
 
 # ---------------------------
 # Session state: history (undo/redo), kanban_state
@@ -54,280 +195,98 @@ def redo():
 # Upload input
 # ---------------------------
 st.sidebar.header("Upload / Template")
-uploaded = st.sidebar.file_uploader("Upload Excel Jadwal", type=["xlsx","xls"])
+uploaded = st.sidebar.file_uploader("Upload Excel (sheet) or CSV with columns: Hari, Range, Poli, Jenis, Dokter", type=["xlsx","csv"])
+if st.sidebar.button("Download template example"):
+    sample = pd.DataFrame({
+        "Hari":["Senin","Senin","Selasa"],
+        "Range":["07.30-09.00","09.00-11.00","07.00-08.30"],
+        "Poli":["Anak","Anak","Gigi"],
+        "Jenis":["Reguler","Eksekutif","Reguler"],
+        "Dokter":["dr. Budi","dr. Sari","drg. Putri"]
+    })
+    st.sidebar.download_button("Download template.xlsx", data=sample.to_excel(index=False, engine="openpyxl"), file_name="template_jadwal.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if uploaded is None:
-    st.info("Upload file Excel jadwal untuk mulai.")
+    st.info("Upload file Excel/CSV untuk mulai. Gunakan tombol 'Download template example' jika perlu contoh.")
     st.stop()
 
-# Function to parse Excel format from your file
-def parse_excel_format(uploaded_file):
-    """Parse Excel format from the uploaded file"""
+# read file tolerant
+@st.cache_data
+def load_raw(bytes_io, fname):
     try:
-        # Read the Excel file
-        xls = pd.ExcelFile(uploaded_file)
-        
-        # Try to read sheet "Jadwal" or first sheet
-        sheet_name = "Jadwal" if "Jadwal" in xls.sheet_names else xls.sheet_names[0]
-        df = xls.parse(sheet_name, header=0)
-        
-        # Display raw data for debugging
-        st.sidebar.write(f"📊 Sheet: {sheet_name}")
-        st.sidebar.write(f"📋 Kolom: {list(df.columns)}")
-        
-        # Check the structure of the data
-        if len(df) > 0:
-            st.sidebar.write("🔍 Data preview (5 rows):")
-            st.sidebar.dataframe(df.head(), use_container_width=True)
-        
-        # Clean column names
-        df.columns = [str(col).strip() for col in df.columns]
-        
-        # Find the correct column names
-        # Look for common column patterns in your Excel file
-        poli_col = None
-        jenis_col = None
-        hari_col = None
-        dokter_col = None
-        
-        for col in df.columns:
-            col_lower = col.lower()
-            if "poli" in col_lower:
-                poli_col = col
-            elif "jenis" in col_lower or "type" in col_lower:
-                jenis_col = col
-            elif "hari" in col_lower or "day" in col_lower:
-                hari_col = col
-            elif "dokter" in col_lower or "doctor" in col_lower:
-                dokter_col = col
-        
-        # If we couldn't find the columns, use the first few columns
-        if not hari_col and len(df.columns) > 0:
-            hari_col = df.columns[0] if "Hari" in df.columns[0] else "Hari"
-        
-        if not poli_col and len(df.columns) > 1:
-            poli_col = df.columns[1] if "Poli" in df.columns[1] else "Poli"
-        
-        if not jenis_col and len(df.columns) > 2:
-            jenis_col = df.columns[2] if "Jenis" in df.columns[2] else "Jenis"
-        
-        if not dokter_col and len(df.columns) > 3:
-            dokter_col = df.columns[3] if "Dokter" in df.columns[3] else "Dokter"
-        
-        # Find time slot columns (columns with time patterns)
-        time_columns = []
-        for col in df.columns:
-            if any(time_str in str(col) for time_str in ["07:", "08:", "09:", "10:", "11:", "12:", "13:", "14:", "15:"]):
-                time_columns.append(col)
-            elif ":" in str(col) and len(str(col)) <= 5:  # Time format like "07:30"
-                time_columns.append(col)
-        
-        # If no time columns found, check for numeric time representations
-        if not time_columns:
-            # Check if there are columns that might be times
-            for col in df.columns:
-                try:
-                    # Try to parse as time
-                    pd.to_datetime(col, format='%H:%M')
-                    time_columns.append(col)
-                except:
-                    continue
-        
-        # If still no time columns, check columns after the first 4
-        if not time_columns and len(df.columns) > 4:
-            time_columns = df.columns[4:].tolist()
-        
-        st.sidebar.write(f"⏰ Kolom waktu ditemukan: {len(time_columns)}")
-        
-        if not time_columns:
-            st.error("Tidak ditemukan kolom waktu dalam file Excel!")
-            return None
-        
-        # Now parse the data
-        expanded_data = []
-        
-        for _, row in df.iterrows():
-            hari = str(row.get(hari_col, "")).strip()
-            poli = str(row.get(poli_col, "")).strip()
-            jenis = str(row.get(jenis_col, "")).strip()
-            dokter = str(row.get(dokter_col, "")).strip()
-            
-            # Skip empty rows
-            if not hari or not dokter or pd.isna(hari) or pd.isna(dokter):
-                continue
-            
-            # Check each time column
-            for time_col in time_columns:
-                value = str(row.get(time_col, "")).strip()
-                
-                # Check if this cell has a schedule (R or E)
-                if value and value.upper() in ["R", "E"]:
-                    expanded_data.append({
-                        "Hari": hari,
-                        "Jam": str(time_col).strip(),
-                        "Poli": poli,
-                        "Jenis": jenis if jenis else ("Reguler" if value.upper() == "R" else "Eksekutif"),
-                        "Dokter": dokter,
-                        "Kode": value.upper()
-                    })
-        
-        if not expanded_data:
-            # Try alternative parsing - maybe the data is in a different format
-            st.warning("Mencoba metode parsing alternatif...")
-            
-            # Try to melt the dataframe
-            if len(df.columns) >= 5:
-                # Assume first 4 columns are metadata, rest are time slots
-                id_vars = df.columns[:4].tolist()
-                value_vars = df.columns[4:].tolist()
-                
-                melted_df = pd.melt(df, 
-                                   id_vars=id_vars,
-                                   value_vars=value_vars,
-                                   var_name="Jam",
-                                   value_name="Kode")
-                
-                # Filter only rows with R or E
-                melted_df = melted_df[melted_df["Kode"].astype(str).str.upper().isin(["R", "E"])]
-                
-                if not melted_df.empty:
-                    # Rename columns
-                    column_map = {}
-                    for i, col in enumerate(id_vars):
-                        if i == 0: column_map[col] = "Hari"
-                        elif i == 1: column_map[col] = "Poli"
-                        elif i == 2: column_map[col] = "Jenis"
-                        elif i == 3: column_map[col] = "Dokter"
-                    
-                    melted_df = melted_df.rename(columns=column_map)
-                    
-                    # Convert to list of dicts
-                    expanded_data = melted_df.to_dict('records')
-        
-        if not expanded_data:
-            st.error("Tidak ada data jadwal yang ditemukan dalam file!")
-            st.write("Struktur file yang diharapkan:")
-            st.write("- Kolom 1: Hari (Senin, Selasa, dll)")
-            st.write("- Kolom 2: Poli (Poli Anak, Poli Bedah, dll)")
-            st.write("- Kolom 3: Jenis (Reguler, Eksekutif/Poleks)")
-            st.write("- Kolom 4: Dokter (Nama dokter)")
-            st.write("- Kolom 5+: Waktu (07:30, 08:00, dll) dengan nilai R atau E")
-            return None
-        
-        return pd.DataFrame(expanded_data)
-        
+        if fname.lower().endswith(".csv"):
+            return pd.read_csv(io.BytesIO(bytes_io))
+        else:
+            xls = pd.ExcelFile(io.BytesIO(bytes_io))
+            sheet = "Jadwal" if "Jadwal" in xls.sheet_names else xls.sheet_names[0]
+            df = xls.parse(sheet)
+            df.columns = [str(c).strip() for c in df.columns]
+            return df
     except Exception as e:
-        st.error(f"Error parsing Excel file: {str(e)}")
-        return None
+        st.error(f"Gagal membaca file: {e}")
+        return pd.DataFrame()
 
-# Parse the uploaded file
-df = parse_excel_format(uploaded)
+raw = load_raw(uploaded.getvalue(), uploaded.name)
 
-if df is None or df.empty:
-    st.error("Tidak dapat memproses file Excel. Pastikan format file sesuai.")
-    st.stop()
+# tolerant column mapping
+col_map = {
+    "Hari": ["Hari","Day","hari","day"],
+    "Range": ["Range","Jam","Waktu","Time","range","jam","waktu","time"],
+    "Poli": ["Poli","Poliklinik","Unit","poli","poliklinik","unit"],
+    "Jenis": ["Jenis","Type","Kategori","jenis","type","kategori"],
+    "Dokter": ["Dokter","Nama Dokter","Doctor","dokter","nama dokter","doctor"]
+}
+def find_col(cols, candidates):
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
 
-# Ensure we have the required columns
-required_cols = ["Hari", "Jam", "Poli", "Jenis", "Dokter", "Kode"]
-for col in required_cols:
-    if col not in df.columns:
-        st.error(f"Kolom '{col}' tidak ditemukan dalam data!")
-        st.stop()
+cols = raw.columns.tolist()
+Hari_col = find_col(cols, col_map["Hari"])
+Range_col = find_col(cols, col_map["Range"])
+Poli_col = find_col(cols, col_map["Poli"])
+Jenis_col = find_col(cols, col_map["Jenis"])
+Dokter_col = find_col(cols, col_map["Dokter"])
 
-# Clean and standardize the data
-# Normalize Jenis based on Kode
-df["Jenis"] = df["Kode"].apply(lambda x: "Reguler" if x == "R" else "Eksekutif")
-
-# Clean time format
-def clean_time(time_str):
-    try:
-        # Remove any whitespace
-        time_str = str(time_str).strip()
-        
-        # Handle different time formats
-        if ":" in time_str:
-            parts = time_str.split(":")
-            if len(parts) == 2:
-                hours = parts[0].zfill(2)
-                minutes = parts[1].zfill(2)
-                return f"{hours}:{minutes}"
-        
-        # Try to parse as datetime
-        dt = pd.to_datetime(time_str, errors='coerce')
-        if not pd.isna(dt):
-            return dt.strftime("%H:%M")
-        
-        return time_str
-    except:
-        return time_str
-
-df["Jam"] = df["Jam"].apply(clean_time)
-
-# Filter only valid time slots
-df = df[df["Jam"].isin(TIME_SLOTS)]
-
-if df.empty:
-    st.error("Tidak ada data dengan slot waktu yang valid (07:00-14:30).")
+if not (Hari_col and Range_col and Poli_col and Jenis_col and Dokter_col):
+    st.error("Kolom input tidak lengkap. Pastikan file memiliki kolom: Hari, Range, Poli, Jenis, Dokter (varian nama didukung).")
+    st.write("Terbaca kolom:", cols)
     st.stop()
 
 # ---------------------------
-# NEW: Convert to Excel-like format (Pivot table)
+# Expand ranges -> slots
 # ---------------------------
-def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
-    """Create Excel-like view with POLI, JENIS, HARI, DOKTER as rows and TIME_SLOTS as columns"""
-    
-    # Create a copy and ensure time slots are standardized
-    df = df_input.copy()
-    
-    # Create a pivot-like structure
-    records = []
-    
-    # Group by POLI, JENIS POLI, HARI, DOKTER
-    grouped = df.groupby(["Poli", "Jenis", "Hari", "Dokter"])
-    
-    for (poli, jenis, hari, dokter), group in grouped:
-        # Create a base record
-        record = {
-            "POLI ASAL": poli,
-            "JENIS POLI": jenis,
-            "HARI": hari,
-            "DOKTER": dokter
-        }
-        
-        # Initialize all time slots as empty
-        for slot in TIME_SLOTS:
-            record[slot] = ""
-        
-        # Fill in the time slots
-        for _, row in group.iterrows():
-            time_slot = row["Jam"]
-            kode = row["Kode"]
-            record[time_slot] = kode
-        
-        records.append(record)
-    
-    # Convert to DataFrame
-    result_df = pd.DataFrame(records)
-    
-    # Order columns: POLI, JENIS, HARI, DOKTER, then time slots
-    ordered_cols = ["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS
-    # Only include columns that exist
-    ordered_cols = [col for col in ordered_cols if col in result_df.columns or col in TIME_SLOTS]
-    
-    # Reorder and add missing columns
-    for col in TIME_SLOTS:
-        if col not in result_df.columns:
-            result_df[col] = ""
-    
-    result_df = result_df[["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS]
-    
-    # Sort by POLI, JENIS, HARI, DOKTER
-    result_df = result_df.sort_values(["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"])
-    
-    # Reset index
-    result_df = result_df.reset_index(drop=True)
-    
-    return result_df
+expanded = []
+for _, r in raw.iterrows():
+    hari = str(r.get(Hari_col)).strip()
+    rng = r.get(Range_col)
+    poli = str(r.get(Poli_col)).strip()
+    jenis = str(r.get(Jenis_col)).strip()
+    dokter = str(r.get(Dokter_col)).strip()
+    if not hari or pd.isna(rng) or not poli or not jenis or not dokter:
+        continue
+    slots = expand_range_safe(str(rng), interval_minutes=30)
+    if not slots:
+        tok = _normalize_time_token(str(rng))
+        if tok:
+            slots = [tok]
+    for s in slots:
+        expanded.append({"Hari":hari, "Jam":s, "Poli":poli, "Jenis":jenis, "Dokter":dokter})
+
+if len(expanded) == 0:
+    st.error("Tidak ada slot terbentuk. Periksa format Range.")
+    st.stop()
+
+df = pd.DataFrame(expanded)
+# normalize Jenis
+df["Jenis"] = df["Jenis"].astype(str).str.strip().replace({
+    "reguler":"Reguler", "regular":"Reguler", 
+    "eksekutif":"Eksekutif", "executive":"Eksekutif", 
+    "poleks":"Eksekutif", "POLEKS":"Eksekutif"
+})
+# Kode
+df["Kode"] = df["Jenis"].apply(lambda x: "R" if str(x).lower()=="reguler" else "E")
 
 # Create Excel-like view
 excel_view_df = create_excel_like_view(df)
@@ -337,41 +296,26 @@ st.session_state.excel_view_df = excel_view_df
 push_history(df.copy())
 
 # ---------------------------
-# REMOVED: Compute Over-kuota only for Eksekutif/Poleks
+# Compute Over-kuota only for Eksekutif/Poleks
 # ---------------------------
 def compute_status(df_in):
     d = df_in.copy()
     d["Over_Kuota"] = False
-    
-    # ONLY check over kuota for Eksekutif/Poleks (maximum 7 per slot)
+    d["Bentrok"] = False
+    # over: count Eksekutif entries per (Hari,Jam)
     eksek = d[d["Jenis"].str.lower().str.contains("eksekutif|poleks", na=False)]
     poleks_counts = eksek.groupby(["Hari","Jam"]).size()
     over_slots = poleks_counts[poleks_counts > 7].index if not poleks_counts.empty else []
-    
     for (hari,jam) in over_slots:
         d.loc[(d["Hari"]==hari)&(d["Jam"]==jam)&(d["Jenis"].str.lower().str.contains("eksekutif|poleks", na=False)), "Over_Kuota"] = True
-    
-    # REMOVED: Bentrok checking - dokter boleh ada di multiple poli di slot yang sama
-    # This rule has been removed as requested
-    
+    # bentrok: same dokter assigned to multiple poli in same slot
+    grouped = d.groupby(["Hari","Jam","Dokter"]).size()
+    for (hari,jam,dok), cnt in grouped.items():
+        if cnt > 1:
+            d.loc[(d["Hari"]==hari)&(d["Jam"]==jam)&(d["Dokter"]==dok), "Bentrok"] = True
     return d
 
 df = compute_status(df)
-
-# ---------------------------
-# Display success message and data summary
-# ---------------------------
-st.success(f"✅ File berhasil diproses! Data loaded: {len(df)} jadwal")
-
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Total Hari", df["Hari"].nunique())
-with col2:
-    st.metric("Total Poli", df["Poli"].nunique())
-with col3:
-    st.metric("Total Dokter", df["Dokter"].nunique())
-with col4:
-    st.metric("Jadwal Reguler", len(df[df["Kode"] == "R"]))
 
 # ---------------------------
 # UI: Filters & summary
@@ -452,6 +396,11 @@ def style_excel_view(df_to_style: pd.DataFrame) -> pd.DataFrame:
         else:
             return 'text-align: center;'
     
+    # Apply styling to time slot columns only
+    style_dict = {}
+    for col in TIME_SLOTS:
+        style_dict[col] = highlight_cell
+    
     styled_df = df_to_style.style.apply(lambda x: x.map(highlight_cell) if x.name in TIME_SLOTS else [''] * len(x))
     
     # Add borders and formatting
@@ -467,11 +416,17 @@ def style_excel_view(df_to_style: pd.DataFrame) -> pd.DataFrame:
          'props': [('background-color', '#4CAF50'), 
                    ('color', 'white'),
                    ('font-weight', 'bold'),
-                   ('text-align', 'center')]},
+                   ('text-align', 'center'),
+                   ('position', 'sticky'),
+                   ('top', '0px'),
+                   ('z-index', '100')]},
         {'selector': 'th',
          'props': [('background-color', '#f2f2f2'),
                    ('font-weight', 'bold'),
-                   ('border', '1px solid #ddd')]}
+                   ('border', '1px solid #ddd')]},
+        {'selector': '',
+         'props': [('max-height', '600px'),
+                   ('overflow-y', 'auto')]}
     ])
     
     return styled_df
@@ -481,6 +436,7 @@ st.write(f"**Total baris: {len(filtered_excel_df)}**")
 
 # Add horizontal scrolling container
 with st.container():
+    # Create a container with horizontal scroll
     excel_html = style_excel_view(filtered_excel_df).to_html()
     
     # Wrap in div with horizontal scroll
@@ -549,540 +505,217 @@ try:
         st.info("Tidak ada data untuk ditampilkan dalam heatmap.")
 except Exception as e:
     st.warning(f"Tidak dapat menampilkan heatmap: {e}")
+    # Fallback: tampilkan tabel sederhana
+    st.write("Summary data:")
+    st.dataframe(summary)
 
 # ---------------------------
-# NEW: IMPROVED KANBAN EDITOR - FULL VIEW WITH SEPARATE REGULER & POLEKS
+# Original Detailed View (Optional - can be collapsed)
 # ---------------------------
-st.header("🎯 Kanban Editor - Semua Jam (07:00-14:30)")
+with st.expander("📋 Tampilan Detail (Original)", expanded=False):
+    st.subheader("Tabel Jadwal Detail")
+    filtered = df[(df["Poli"].isin(poli_filter)) & (df["Jenis"].isin(jenis_filter))]
+    if selected_day != "--Semua--":
+        filtered = filtered[filtered["Hari"]==selected_day]
 
+    def style_rows(row):
+        if row["Over_Kuota"]:
+            return ["background-color:#ffb3b3;color:black"]*len(row)
+        if row["Bentrok"]:
+            return ["background-color:#ffd9b3;color:black"]*len(row)
+        if row["Kode"]=="R":
+            return ["background-color:#dff2d8;color:black"]*len(row)
+        return ["background-color:#e8f0ff;color:black"]*len(row)
+
+    styled_df = filtered.sort_values(["Hari","Jam","Poli","Dokter"]).reset_index(drop=True).style.apply(style_rows, axis=1)
+    st.dataframe(styled_df, width='stretch', height=400)
+
+# ---------------------------
+# Kanban editor (per selected_day) - Updated
+# ---------------------------
+st.header("🎯 Kanban Editor")
 if selected_day == "--Semua--":
     st.info("Pilih satu hari di sidebar untuk membuka Kanban editor.")
 else:
-    # Use all time slots from 07:00 to 14:30
-    SLOTS = TIME_SLOTS
-    
-    # Initialize kanban state if not exists
-    if selected_day not in st.session_state.kanban_state:
-        lanes = {}
-        for s in SLOTS:
-            # Get all doctors for this time slot (both Reguler and Eksekutif)
-            rows_s = df[(df["Hari"]==selected_day)&(df["Jam"]==s)].reset_index(drop=True)
-            cards = []
-            for i,r in rows_s.iterrows():
-                cards.append({
-                    "id": f"{selected_day}|{s}|{i}|{np.random.randint(1e9)}",
-                    "Dokter": r["Dokter"],
-                    "Poli": r["Poli"],
-                    "Jenis": r["Jenis"],
-                    "Kode": r["Kode"],
-                    "Over": bool(r["Over_Kuota"]),
-                    "Hari": selected_day,
-                    "Jam": s
-                })
-            lanes[s]=cards
-        st.session_state.kanban_state[selected_day] = lanes
-    
-    lanes = st.session_state.kanban_state[selected_day]
-    
-    # Create two separate views: Reguler and Eksekutif
-    st.markdown(f"### 📅 Hari: {selected_day}")
-    
-    # Create tabs for better organization
-    tab1, tab2 = st.tabs(["🎯 Tampilan Kanban (Drag & Drop)", "📝 Edit Manual"])
-    
-    with tab1:
-        # JavaScript for drag and drop
-        drag_drop_js = """
-        <script>
-        // Drag and Drop functionality
-        function setupDragAndDrop() {
-            const cards = document.querySelectorAll('.kanban-card');
-            const columns = document.querySelectorAll('.kanban-column');
-            
-            // Setup draggable cards
-            cards.forEach(card => {
-                card.setAttribute('draggable', 'true');
+    SLOTS = sorted(df[df["Hari"]==selected_day]["Jam"].unique(), key=lambda x: datetime.strptime(x,"%H:%M"))
+    if len(SLOTS)==0:
+        st.info("Tidak ada slot untuk hari ini.")
+    else:
+        # initialize kanban state if not exists
+        if selected_day not in st.session_state.kanban_state:
+            lanes = {}
+            for s in SLOTS:
+                rows_s = df[(df["Hari"]==selected_day)&(df["Jam"]==s)].reset_index(drop=True)
+                cards = []
+                for i,r in rows_s.iterrows():
+                    cards.append({
+                        "id": f"{selected_day}|{s}|{i}|{np.random.randint(1e9)}",
+                        "Dokter": r["Dokter"],
+                        "Poli": r["Poli"],
+                        "Jenis": r["Jenis"],
+                        "Kode": r["Kode"],
+                        "Over": bool(r["Over_Kuota"]),
+                        "Bentrok": bool(r["Bentrok"])
+                    })
+                lanes[s]=cards
+            st.session_state.kanban_state[selected_day] = lanes
+
+        lanes = st.session_state.kanban_state[selected_day]
+        
+        # Create columns for Kanban
+        st.subheader(f"Kanban Editor - {selected_day}")
+        cols = st.columns(min(len(SLOTS), 8))
+        
+        new_state = {s: list(lanes.get(s,[])) for s in SLOTS}
+        moved_any = False
+
+        # Display each time slot as a Kanban column
+        for i, s in enumerate(SLOTS):
+            with cols[i % len(cols)]:
+                # Column header with count
+                card_count = len(new_state[s])
+                st.markdown(f"### {s}")
+                st.markdown(f"**{card_count} dokter**")
                 
-                card.addEventListener('dragstart', (e) => {
-                    const cardData = JSON.parse(card.getAttribute('data-card'));
-                    e.dataTransfer.setData('text/plain', JSON.stringify({
-                        source_day: cardData.hari,
-                        source_slot: cardData.jam,
-                        card_data: cardData
-                    }));
-                    card.classList.add('dragging');
-                });
-                
-                card.addEventListener('dragend', () => {
-                    card.classList.remove('dragging');
-                    // Refresh page to show changes
-                    setTimeout(() => window.location.reload(), 300);
-                });
-            });
-            
-            // Setup droppable columns
-            columns.forEach(column => {
-                column.addEventListener('dragover', (e) => {
-                    e.preventDefault();
-                    column.classList.add('drag-over');
-                });
-                
-                column.addEventListener('dragleave', () => {
-                    column.classList.remove('drag-over');
-                });
-                
-                column.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    column.classList.remove('drag-over');
-                    
-                    try {
-                        const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
-                        const columnData = JSON.parse(column.getAttribute('data-column'));
+                # Display cards in this time slot
+                cards = new_state[s]
+                if not cards:
+                    st.info("— Kosong —")
+                else:
+                    for card in cards:
+                        # Card styling based on type
+                        if card["Over"]:
+                            bg_color = "#ffb3b3"
+                            border_color = "#ff0000"
+                        elif card["Bentrok"]:
+                            bg_color = "#ffd9b3"
+                            border_color = "#ff9900"
+                        elif card["Kode"] == "R":
+                            bg_color = "#dff2d8"
+                            border_color = "#28a745"
+                        else:
+                            bg_color = "#e8f0ff"
+                            border_color = "#007bff"
                         
-                        // Update drag data with target
-                        dragData.target_day = columnData.hari;
-                        dragData.target_slot = columnData.slot;
-                        
-                        // Send to Streamlit via parent window
-                        window.parent.postMessage({
-                            type: 'KANBAN_DRAG_DROP',
-                            data: dragData
-                        }, '*');
-                        
-                    } catch (error) {
-                        console.error('Drop error:', error);
-                    }
-                });
-            });
-        }
-        
-        // Initialize when page loads
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', setupDragAndDrop);
-        } else {
-            setupDragAndDrop();
-        }
-        </script>
-        
-        <style>
-        .kanban-board {
-            display: flex;
-            gap: 5px;
-            overflow-x: auto;
-            padding: 10px;
-            margin-bottom: 20px;
-            background: #f5f5f5;
-            border-radius: 8px;
-        }
-        
-        .kanban-column {
-            background: white;
-            border-radius: 6px;
-            padding: 8px;
-            min-width: 130px;
-            max-width: 150px;
-            border: 1px solid #ddd;
-            transition: all 0.2s;
-            min-height: 500px;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .kanban-column.drag-over {
-            background: #e8f4fd;
-            border-color: #4dabf7;
-            border-width: 2px;
-        }
-        
-        .slot-header {
-            background: #495057;
-            color: white;
-            padding: 6px;
-            border-radius: 4px;
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 11px;
-            font-weight: bold;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-        
-        .card-container {
-            flex-grow: 1;
-            overflow-y: auto;
-            padding-right: 2px;
-        }
-        
-        .card-container::-webkit-scrollbar {
-            width: 4px;
-        }
-        
-        .card-container::-webkit-scrollbar-thumb {
-            background: #ccc;
-            border-radius: 2px;
-        }
-        
-        .kanban-card {
-            background: white;
-            border-radius: 4px;
-            padding: 6px;
-            margin-bottom: 5px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-            cursor: grab;
-            font-size: 10px;
-            transition: all 0.2s;
-            border-left: 3px solid;
-            position: relative;
-            break-inside: avoid;
-        }
-        
-        .kanban-card:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 2px 4px rgba(0,0,0,0.15);
-        }
-        
-        .kanban-card.dragging {
-            opacity: 0.5;
-            transform: rotate(3deg);
-        }
-        
-        .kanban-card-reguler {
-            border-left-color: #28a745;
-            background: linear-gradient(to right, #f0fff4, white);
-        }
-        
-        .kanban-card-eksekutif {
-            border-left-color: #007bff;
-            background: linear-gradient(to right, #f0f8ff, white);
-        }
-        
-        .kanban-card-over {
-            border-left-color: #dc3545;
-            background: linear-gradient(to right, #fff5f5, white);
-        }
-        
-        .card-header {
-            font-weight: bold;
-            font-size: 9px;
-            margin-bottom: 3px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            color: #333;
-        }
-        
-        .card-details {
-            font-size: 8px;
-            color: #666;
-            line-height: 1.2;
-        }
-        
-        .card-icon {
-            position: absolute;
-            top: 4px;
-            right: 4px;
-            font-size: 8px;
-        }
-        
-        .empty-slot {
-            color: #999;
-            font-style: italic;
-            text-align: center;
-            padding: 10px;
-            font-size: 9px;
-            border: 1px dashed #ddd;
-            border-radius: 4px;
-            margin: 5px 0;
-        }
-        
-        .section-divider {
-            height: 2px;
-            background: linear-gradient(to right, transparent, #ddd, transparent);
-            margin: 8px 0;
-        }
-        
-        .type-label {
-            font-size: 8px;
-            font-weight: bold;
-            color: white;
-            padding: 1px 4px;
-            border-radius: 2px;
-            margin-bottom: 3px;
-            display: inline-block;
-        }
-        
-        .type-reguler {
-            background: #28a745;
-        }
-        
-        .type-eksekutif {
-            background: #007bff;
-        }
-        </style>
-        """
-        
-        # Create the kanban board for all time slots
-        st.markdown("**🎯 Seret dan lepas kartu untuk memindahkan jadwal**")
-        
-        # Create a container for the full kanban board
-        kanban_html = "<div class='kanban-board'>"
-        
-        for slot in SLOTS:
-            cards = lanes.get(slot, [])
-            
-            # Separate cards by type
-            reguler_cards = [c for c in cards if c.get("Kode") == "R"]
-            eksekutif_cards = [c for c in cards if c.get("Kode") == "E"]
-            
-            # Column data for JavaScript
-            column_data = json.dumps({
-                "hari": selected_day,
-                "slot": slot
-            })
-            
-            kanban_html += f"""
-            <div class='kanban-column' data-column='{column_data}'>
-                <div class='slot-header'>{slot}</div>
-                <div class='card-container'>
-            """
-            
-            # Add Reguler cards first (on top)
-            if reguler_cards:
-                kanban_html += f"""<div class='type-label type-reguler'>REGULER ({len(reguler_cards)})</div>"""
-                for card in reguler_cards:
-                    card_class = "kanban-card kanban-card-reguler"
-                    if card.get("Over"):
-                        card_class += " kanban-card-over"
-                    
-                    status_icon = "🟢" if card.get("Kode") == "R" else "🔵"
-                    if card.get("Over"):
-                        status_icon = "🔴"
-                    
-                    card_data = json.dumps(card)
-                    
-                    kanban_html += f"""
-                    <div class='{card_class}' data-card='{card_data}'>
-                        <div class='card-header' title='{card['Dokter']}'>{card['Dokter']}</div>
-                        <div class='card-details'>
-                            <div><strong>{card['Poli']}</strong></div>
+                        # Card HTML
+                        card_html = f"""
+                        <div style="
+                            background-color: {bg_color};
+                            border: 2px solid {border_color};
+                            border-radius: 8px;
+                            padding: 10px;
+                            margin: 5px 0;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        ">
+                            <div style="font-weight: bold; font-size: 14px;">{card['Dokter']}</div>
+                            <div style="font-size: 12px; color: #555;">
+                                <strong>Poli:</strong> {card['Poli']}<br>
+                                <strong>Jenis:</strong> {card['Jenis']}<br>
+                                <strong>Kode:</strong> {card['Kode']}
+                            </div>
                         </div>
-                        <div class='card-icon'>{status_icon}</div>
-                    </div>
-                    """
-            
-            # Add divider between Reguler and Eksekutif
-            if reguler_cards and eksekutif_cards:
-                kanban_html += "<div class='section-divider'></div>"
-            
-            # Add Eksekutif cards (below Reguler)
-            if eksekutif_cards:
-                kanban_html += f"""<div class='type-label type-eksekutif'>EKSEKUTIF ({len(eksekutif_cards)})</div>"""
-                for card in eksekutif_cards:
-                    card_class = "kanban-card kanban-card-eksekutif"
-                    if card.get("Over"):
-                        card_class += " kanban-card-over"
-                    
-                    status_icon = "🔵"
-                    if card.get("Over"):
-                        status_icon = "🔴"
-                    
-                    card_data = json.dumps(card)
-                    
-                    kanban_html += f"""
-                    <div class='{card_class}' data-card='{card_data}'>
-                        <div class='card-header' title='{card['Dokter']}'>{card['Dokter']}</div>
-                        <div class='card-details'>
-                            <div><strong>{card['Poli']}</strong></div>
-                        </div>
-                        <div class='card-icon'>{status_icon}</div>
-                    </div>
-                    """
-            
-            if not reguler_cards and not eksekutif_cards:
-                kanban_html += "<div class='empty-slot'>Kosong</div>"
-            
-            kanban_html += "</div></div>"  # Close card-container and kanban-column
+                        """
+                        st.markdown(card_html, unsafe_allow_html=True)
+
+        # Move functionality
+        st.markdown("---")
+        st.subheader("Pindahkan Jadwal")
         
-        kanban_html += "</div>"  # Close kanban-board
-        
-        # Add JavaScript and HTML
-        st.components.v1.html(drag_drop_js + kanban_html, height=550, scrolling=False)
-        
-        # Legend
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.markdown("🟢 **Reguler**")
-        with col2:
-            st.markdown("🔵 **Eksekutif**")
-        with col3:
-            st.markdown("🔴 **Over Kuota** (Poleks > 7)")
-        with col4:
-            st.markdown("**Aturan:** Poleks maksimal 7 dokter per slot")
-    
-    with tab2:
-        # Manual move section
-        st.markdown("### 📝 Edit Manual")
-        
-        # Collect all cards for manual move
+        # Collect all cards for selection
         all_cards = []
         for s in SLOTS:
-            for card in lanes.get(s, []):
+            for card in new_state[s]:
                 card_copy = card.copy()
                 card_copy["Jam"] = s
                 all_cards.append(card_copy)
         
         if all_cards:
+            # Selection interface
             col_select, col_move = st.columns([3, 2])
             
             with col_select:
+                # Format display for selection
                 options = []
                 display_texts = []
                 for i, card in enumerate(all_cards):
-                    time_display = card['Jam']
-                    jenis_display = "REG" if card.get("Kode") == "R" else "EKS"
-                    display_text = f"[{time_display}] {card['Dokter'][:20]} - {card['Poli'][:15]} ({jenis_display})"
-                    if card.get("Over"):
-                        display_text += " 🔴"
+                    display_text = f"{card['Dokter']} - {card['Poli']} ({card['Jenis']}) @ {card['Jam']}"
+                    if card["Over"]:
+                        display_text += " ⚠️ OVER"
+                    if card["Bentrok"]:
+                        display_text += " ⚠️ BENTROK"
                     options.append(i)
                     display_texts.append(display_text)
                 
                 selected_index = st.selectbox(
                     "Pilih jadwal dokter:",
                     options=options,
-                    format_func=lambda x: display_texts[x],
-                    key="manual_select"
+                    format_func=lambda x: display_texts[x]
                 )
                 
+                # Show selected card details
                 if selected_index is not None:
                     selected_card = all_cards[selected_index]
-                    card_type = "Reguler" if selected_card.get("Kode") == "R" else "Eksekutif"
-                    st.info(f"**Terpilih:** {selected_card['Dokter']}\n- Poli: {selected_card['Poli']}\n- Tipe: {card_type}\n- Jam: {selected_card['Jam']}")
+                    st.info(f"**Terpilih:** {selected_card['Dokter']} - {selected_card['Poli']} @ {selected_card['Jam']}")
             
             with col_move:
-                # Show current slot
-                if selected_index is not None:
-                    selected_card = all_cards[selected_index]
-                    st.write(f"**Slot saat ini:** {selected_card['Jam']}")
-                
                 target_slot = st.selectbox(
                     "Pindahkan ke jam:",
                     SLOTS,
-                    index=0 if SLOTS else None,
-                    key="target_slot"
+                    index=0 if SLOTS else None
                 )
                 
-                # Check for over kuota if moving Eksekutif to target slot
-                if selected_index is not None:
-                    selected_card = all_cards[selected_index]
-                    if selected_card.get("Kode") == "E":  # Eksekutif
-                        eksekutif_in_target = len([c for c in lanes.get(target_slot, []) if c.get("Kode") == "E"])
-                        if eksekutif_in_target >= 7:
-                            st.warning(f"⚠️ Slot {target_slot} sudah ada {eksekutif_in_target} dokter Poleks (maksimal 7)")
-                
-                col_move1, col_move2 = st.columns(2)
-                with col_move1:
-                    if st.button("🚀 Pindahkan", type="primary", use_container_width=True):
-                        card_to_move = all_cards[selected_index]
-                        original_slot = card_to_move["Jam"]
-                        
-                        # Remove from original slot
-                        if original_slot in st.session_state.kanban_state[selected_day]:
-                            st.session_state.kanban_state[selected_day][original_slot] = [
-                                c for c in st.session_state.kanban_state[selected_day][original_slot]
-                                if c.get("id") != card_to_move.get("id")
-                            ]
-                        
-                        # Add to target slot
-                        new_card = {
-                            "id": f"{selected_day}|{target_slot}|{np.random.randint(1e9)}",
-                            "Dokter": card_to_move["Dokter"],
-                            "Poli": card_to_move["Poli"],
-                            "Jenis": card_to_move["Jenis"],
-                            "Kode": card_to_move.get("Kode", "E"),
-                            "Over": False,
-                            "Hari": selected_day,
-                            "Jam": target_slot
-                        }
-                        
-                        if target_slot not in st.session_state.kanban_state[selected_day]:
-                            st.session_state.kanban_state[selected_day][target_slot] = []
-                        
-                        st.session_state.kanban_state[selected_day][target_slot].append(new_card)
-                        
-                        # Rebuild df and compute status
-                        df_other = df[df["Hari"] != selected_day].copy()
-                        new_rows = []
-                        
-                        for s in SLOTS:
-                            for c in st.session_state.kanban_state[selected_day][s]:
-                                new_rows.append({
-                                    "Hari": selected_day,
-                                    "Jam": s,
-                                    "Poli": c.get("Poli", ""),
-                                    "Jenis": c.get("Jenis", ""),
-                                    "Dokter": c.get("Dokter", "")
-                                })
-                        
-                        df_new = pd.concat([df_other, pd.DataFrame(new_rows)], ignore_index=True)
-                        df_new = compute_status(df_new)
-                        
-                        # Update Excel view
-                        excel_view_df = create_excel_like_view(df_new)
-                        st.session_state.excel_view_df = excel_view_df
-                        
-                        # Update main df
-                        df = df_new.copy()
-                        
-                        # Add to history
-                        push_history(df.copy())
-                        
-                        st.success(f"✅ {card_to_move['Dokter']} dipindahkan dari {original_slot} ke {target_slot}")
-                        st.rerun()
-                
-                with col_move2:
-                    if st.button("🗑️ Hapus", type="secondary", use_container_width=True):
-                        card_to_delete = all_cards[selected_index]
-                        original_slot = card_to_delete["Jam"]
-                        
-                        # Remove from slot
-                        if original_slot in st.session_state.kanban_state[selected_day]:
-                            st.session_state.kanban_state[selected_day][original_slot] = [
-                                c for c in st.session_state.kanban_state[selected_day][original_slot]
-                                if c.get("id") != card_to_delete.get("id")
-                            ]
-                        
-                        # Rebuild df
-                        df_other = df[df["Hari"] != selected_day].copy()
-                        new_rows = []
-                        
-                        for s in SLOTS:
-                            for c in st.session_state.kanban_state[selected_day][s]:
-                                new_rows.append({
-                                    "Hari": selected_day,
-                                    "Jam": s,
-                                    "Poli": c.get("Poli", ""),
-                                    "Jenis": c.get("Jenis", ""),
-                                    "Dokter": c.get("Dokter", "")
-                                })
-                        
-                        df_new = pd.concat([df_other, pd.DataFrame(new_rows)], ignore_index=True)
-                        df_new = compute_status(df_new)
-                        
-                        # Update Excel view
-                        excel_view_df = create_excel_like_view(df_new)
-                        st.session_state.excel_view_df = excel_view_df
-                        
-                        # Update main df
-                        df = df_new.copy()
-                        
-                        # Add to history
-                        push_history(df.copy())
-                        
-                        st.success(f"🗑️ {card_to_delete['Dokter']} dihapus dari {original_slot}")
-                        st.rerun()
-        else:
-            st.info("Tidak ada jadwal untuk hari ini.")
+                if st.button("🚀 Pindahkan Jadwal", type="primary", use_container_width=True):
+                    # Perform move
+                    card_to_move = all_cards[selected_index]
+                    original_slot = card_to_move["Jam"]
+                    
+                    # Remove from original slot
+                    st.session_state.kanban_state[selected_day][original_slot] = [
+                        c for c in st.session_state.kanban_state[selected_day][original_slot]
+                        if not (c["Dokter"] == card_to_move["Dokter"] and c["Poli"] == card_to_move["Poli"])
+                    ]
+                    
+                    # Add to target slot
+                    new_card = {
+                        "id": f"{selected_day}|{target_slot}|{np.random.randint(1e9)}",
+                        "Dokter": card_to_move["Dokter"],
+                        "Poli": card_to_move["Poli"],
+                        "Jenis": card_to_move["Jenis"],
+                        "Kode": card_to_move.get("Kode", "E"),
+                        "Over": False,
+                        "Bentrok": False
+                    }
+                    st.session_state.kanban_state[selected_day][target_slot].append(new_card)
+                    
+                    # Rebuild df and compute status
+                    df_other = df[df["Hari"] != selected_day].copy()
+                    new_rows = []
+                    
+                    for s in SLOTS:
+                        for c in st.session_state.kanban_state[selected_day][s]:
+                            new_rows.append({
+                                "Hari": selected_day,
+                                "Jam": s,
+                                "Poli": c.get("Poli", ""),
+                                "Jenis": c.get("Jenis", ""),
+                                "Dokter": c.get("Dokter", "")
+                            })
+                    
+                    df_new = pd.concat([df_other, pd.DataFrame(new_rows)], ignore_index=True)
+                    df_new = compute_status(df_new)
+                    
+                    # Update Excel view
+                    excel_view_df = create_excel_like_view(df_new)
+                    st.session_state.excel_view_df = excel_view_df
+                    
+                    # Update main df
+                    df = df_new.copy()
+                    
+                    # Add to history
+                    push_history(df.copy())
+                    
+                    st.success(f"✅ {card_to_move['Dokter']} dipindahkan dari {original_slot} ke {target_slot}")
+                    st.rerun()
 
 # ---------------------------
 # Export buttons
@@ -1093,6 +726,7 @@ st.header("💾 Export & Simpan")
 export_cols = st.columns(3)
 
 with export_cols[0]:
+    # Export CSV (detailed)
     csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Download CSV (Detail)",
@@ -1103,6 +737,7 @@ with export_cols[0]:
     )
 
 with export_cols[1]:
+    # Export Excel (detailed)
     def to_xlsx_bytes(df_in):
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine="openpyxl") as writer:
@@ -1119,6 +754,7 @@ with export_cols[1]:
     )
 
 with export_cols[2]:
+    # Export Excel-like view
     def to_excel_view_xlsx(df_in):
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine="openpyxl") as writer:
