@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import io
+from typing import Dict, List
 
 # Optional drag & drop library
 try:
@@ -14,6 +15,16 @@ except Exception:
 
 st.set_page_config(page_title="Jadwal Poli (Streamlit Full)", layout="wide")
 st.title("📅 Jadwal Poli — Streamlit Full (Offline)")
+
+# ---------------------------
+# Constants for Excel-like view
+# ---------------------------
+TIME_SLOTS = [
+    "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", 
+    "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30"
+]
+
+DAYS_ORDER = ["Senin", "Selasa", "Rabu", "Kamis", "Jum'at"]
 
 # ---------------------------
 # Helpers: time normalization & expansion
@@ -78,6 +89,79 @@ def expand_range_safe(range_str: str, interval_minutes: int = 30):
     return slots
 
 # ---------------------------
+# NEW: Convert to Excel-like format (Pivot table)
+# ---------------------------
+def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
+    """Create Excel-like view with POLI, JENIS, HARI, DOKTER as rows and TIME_SLOTS as columns"""
+    
+    # Create a copy and ensure time slots are standardized
+    df = df_input.copy()
+    
+    # Standardize time slots to match TIME_SLOTS format
+    def standardize_time(time_str):
+        try:
+            t = datetime.strptime(str(time_str).strip(), "%H:%M")
+            # Round to nearest 30 minutes
+            minutes = t.minute
+            if minutes < 15:
+                minutes = 0
+            elif minutes < 45:
+                minutes = 30
+            else:
+                t += timedelta(hours=1)
+                minutes = 0
+            return t.replace(minute=minutes).strftime("%H:%M")
+        except:
+            return str(time_str).strip()
+    
+    df["Jam"] = df["Jam"].apply(standardize_time)
+    
+    # Filter only valid time slots
+    df = df[df["Jam"].isin(TIME_SLOTS)]
+    
+    # Create a pivot-like structure
+    records = []
+    
+    # Group by POLI, JENIS POLI, HARI, DOKTER
+    grouped = df.groupby(["Poli", "Jenis", "Hari", "Dokter"])
+    
+    for (poli, jenis, hari, dokter), group in grouped:
+        # Create a base record
+        record = {
+            "POLI ASAL": poli,
+            "JENIS POLI": jenis,
+            "HARI": hari,
+            "DOKTER": dokter
+        }
+        
+        # Initialize all time slots as empty
+        for slot in TIME_SLOTS:
+            record[slot] = ""
+        
+        # Fill in the time slots
+        for _, row in group.iterrows():
+            time_slot = row["Jam"]
+            kode = row["Kode"]
+            record[time_slot] = kode
+        
+        records.append(record)
+    
+    # Convert to DataFrame
+    result_df = pd.DataFrame(records)
+    
+    # Order columns: POLI, JENIS, HARI, DOKTER, then time slots
+    ordered_cols = ["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS
+    result_df = result_df[ordered_cols]
+    
+    # Sort by POLI, JENIS, HARI, DOKTER
+    result_df = result_df.sort_values(["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"])
+    
+    # Reset index
+    result_df = result_df.reset_index(drop=True)
+    
+    return result_df
+
+# ---------------------------
 # Session state: history (undo/redo), kanban_state
 # ---------------------------
 if "history" not in st.session_state:
@@ -86,6 +170,8 @@ if "future" not in st.session_state:
     st.session_state.future = []
 if "kanban_state" not in st.session_state:
     st.session_state.kanban_state = {}  # day -> lanes dict
+if "excel_view_df" not in st.session_state:
+    st.session_state.excel_view_df = pd.DataFrame()
 
 def push_history(df_snapshot):
     st.session_state.history.append(df_snapshot.copy())
@@ -194,9 +280,17 @@ if len(expanded) == 0:
 
 df = pd.DataFrame(expanded)
 # normalize Jenis
-df["Jenis"] = df["Jenis"].astype(str).str.strip().replace({"reguler":"Reguler","regular":"Reguler","eksekutif":"Eksekutif","executive":"Eksekutif","poleks":"Eksekutif","POLEKS":"Eksekutif"})
+df["Jenis"] = df["Jenis"].astype(str).str.strip().replace({
+    "reguler":"Reguler", "regular":"Reguler", 
+    "eksekutif":"Eksekutif", "executive":"Eksekutif", 
+    "poleks":"Eksekutif", "POLEKS":"Eksekutif"
+})
 # Kode
 df["Kode"] = df["Jenis"].apply(lambda x: "R" if str(x).lower()=="reguler" else "E")
+
+# Create Excel-like view
+excel_view_df = create_excel_like_view(df)
+st.session_state.excel_view_df = excel_view_df
 
 # push initial snapshot to history
 push_history(df.copy())
@@ -239,55 +333,190 @@ with colu1:
         prev = undo()
         if prev is not None:
             df = prev.copy()
+            # Recreate Excel view
+            excel_view_df = create_excel_like_view(df)
+            st.session_state.excel_view_df = excel_view_df
             st.success("Undo berhasil")
 with colu2:
     if st.button("Redo"):
         nxt = redo()
         if nxt is not None:
             df = nxt.copy()
+            # Recreate Excel view
+            excel_view_df = create_excel_like_view(df)
+            st.session_state.excel_view_df = excel_view_df
             st.success("Redo berhasil")
+
+# ---------------------------
+# NEW: Excel-like View
+# ---------------------------
+st.header("📊 Tampilan Jadwal (Format Excel)")
+
+# Filter options for Excel view
+excel_filter_cols = st.columns([2, 2, 2, 1])
+with excel_filter_cols[0]:
+    excel_poli_filter = st.multiselect(
+        "Filter Poli (Excel View)", 
+        sorted(st.session_state.excel_view_df["POLI ASAL"].unique()),
+        default=sorted(st.session_state.excel_view_df["POLI ASAL"].unique())
+    )
+with excel_filter_cols[1]:
+    excel_jenis_filter = st.multiselect(
+        "Filter Jenis Poli", 
+        sorted(st.session_state.excel_view_df["JENIS POLI"].unique()),
+        default=sorted(st.session_state.excel_view_df["JENIS POLI"].unique())
+    )
+with excel_filter_cols[2]:
+    excel_hari_filter = st.multiselect(
+        "Filter Hari", 
+        sorted(st.session_state.excel_view_df["HARI"].unique()),
+        default=sorted(st.session_state.excel_view_df["HARI"].unique())
+    )
+
+# Apply filters to Excel view
+filtered_excel_df = st.session_state.excel_view_df.copy()
+if excel_poli_filter:
+    filtered_excel_df = filtered_excel_df[filtered_excel_df["POLI ASAL"].isin(excel_poli_filter)]
+if excel_jenis_filter:
+    filtered_excel_df = filtered_excel_df[filtered_excel_df["JENIS POLI"].isin(excel_jenis_filter)]
+if excel_hari_filter:
+    filtered_excel_df = filtered_excel_df[filtered_excel_df["HARI"].isin(excel_hari_filter)]
+
+# Style function for Excel-like view
+def style_excel_view(df_to_style: pd.DataFrame) -> pd.DataFrame:
+    """Apply styling to Excel-like view dataframe"""
+    
+    def highlight_cell(val):
+        if val == "R":
+            return 'background-color: #90EE90; color: black; font-weight: bold; text-align: center;'
+        elif val == "E":
+            return 'background-color: #87CEEB; color: black; font-weight: bold; text-align: center;'
+        elif val == "":
+            return 'background-color: #F5F5F5; color: #999; text-align: center;'
+        else:
+            return 'text-align: center;'
+    
+    # Apply styling to time slot columns only
+    style_dict = {}
+    for col in TIME_SLOTS:
+        style_dict[col] = highlight_cell
+    
+    styled_df = df_to_style.style.apply(lambda x: x.map(highlight_cell) if x.name in TIME_SLOTS else [''] * len(x))
+    
+    # Add borders and formatting
+    styled_df = styled_df.set_properties(**{
+        'border': '1px solid #ddd',
+        'font-size': '12px',
+        'font-family': 'Arial, sans-serif'
+    })
+    
+    # Header styling
+    styled_df = styled_df.set_table_styles([
+        {'selector': 'thead th',
+         'props': [('background-color', '#4CAF50'), 
+                   ('color', 'white'),
+                   ('font-weight', 'bold'),
+                   ('text-align', 'center'),
+                   ('position', 'sticky'),
+                   ('top', '0px'),
+                   ('z-index', '100')]},
+        {'selector': 'th',
+         'props': [('background-color', '#f2f2f2'),
+                   ('font-weight', 'bold'),
+                   ('border', '1px solid #ddd')]},
+        {'selector': '',
+         'props': [('max-height', '600px'),
+                   ('overflow-y', 'auto')]}
+    ])
+    
+    return styled_df
+
+# Display the Excel-like view
+st.write(f"**Total baris: {len(filtered_excel_df)}**")
+
+# Add horizontal scrolling container
+with st.container():
+    # Create a container with horizontal scroll
+    excel_html = style_excel_view(filtered_excel_df).to_html()
+    
+    # Wrap in div with horizontal scroll
+    scrollable_html = f"""
+    <div style="width: 100%; overflow-x: auto; border: 1px solid #ddd; border-radius: 5px; max-height: 700px; overflow-y: auto;">
+        {excel_html}
+    </div>
+    """
+    
+    st.markdown(scrollable_html, unsafe_allow_html=True)
+
+# Summary statistics for Excel view
+st.subheader("📈 Ringkasan Tampilan Excel")
+summary_cols = st.columns(4)
+with summary_cols[0]:
+    st.metric("Total Poli", filtered_excel_df["POLI ASAL"].nunique())
+with summary_cols[1]:
+    st.metric("Total Dokter", filtered_excel_df["DOKTER"].nunique())
+with summary_cols[2]:
+    reguler_count = (filtered_excel_df[TIME_SLOTS] == "R").sum().sum()
+    st.metric("Slot Reguler (R)", reguler_count)
+with summary_cols[3]:
+    eksekutif_count = (filtered_excel_df[TIME_SLOTS] == "E").sum().sum()
+    st.metric("Slot Eksekutif (E)", eksekutif_count)
+
+# ---------------------------
+# Original Detailed View (Optional - can be collapsed)
+# ---------------------------
+with st.expander("📋 Tampilan Detail (Original)", expanded=False):
+    st.subheader("Tabel Jadwal Detail")
+    filtered = df[(df["Poli"].isin(poli_filter)) & (df["Jenis"].isin(jenis_filter))]
+    if selected_day != "--Semua--":
+        filtered = filtered[filtered["Hari"]==selected_day]
+
+    def style_rows(row):
+        if row["Over_Kuota"]:
+            return ["background-color:#ffb3b3;color:black"]*len(row)
+        if row["Bentrok"]:
+            return ["background-color:#ffd9b3;color:black"]*len(row)
+        if row["Kode"]=="R":
+            return ["background-color:#dff2d8;color:black"]*len(row)
+        return ["background-color:#e8f0ff;color:black"]*len(row)
+
+    st.dataframe(
+        filtered.sort_values(["Hari","Jam","Poli","Dokter"]).reset_index(drop=True).style.apply(style_rows, axis=1), 
+        use_container_width=True,
+        height=400
+    )
 
 # ---------------------------
 # Dashboard & summary
 # ---------------------------
-st.header("Ringkasan")
-c1,c2,c3 = st.columns(3)
+st.header("📊 Dashboard Ringkasan")
+c1,c2,c3,c4 = st.columns(4)
 c1.metric("Total slot", len(df))
 c2.metric("Total dokter unik", df["Dokter"].nunique())
-c3.metric("Slot unik", df[["Hari","Jam"]].drop_duplicates().shape[0])
+c3.metric("Total Poli", df["Poli"].nunique())
+c4.metric("Slot unik", df[["Hari","Jam"]].drop_duplicates().shape[0])
 
 # Heatmap
 st.subheader("Heatmap (Jam × Hari)")
 summary = df.groupby(["Hari","Jam"]).size().reset_index(name="Jumlah")
+# Ensure proper ordering
+summary["Hari"] = pd.Categorical(summary["Hari"], categories=DAYS_ORDER, ordered=True)
+summary["Jam"] = pd.Categorical(summary["Jam"], categories=TIME_SLOTS, ordered=True)
+summary = summary.sort_values(["Hari", "Jam"])
+
 pivot = summary.pivot(index="Jam", columns="Hari", values="Jumlah").fillna(0).sort_index()
 import plotly.express as px
-fig = px.imshow(pivot, labels=dict(x="Hari", y="Jam", color="Jumlah Dokter"), color_continuous_scale="Blues")
-st.plotly_chart(fig, use_container_width=True, height=420)
+fig = px.imshow(pivot, 
+                labels=dict(x="Hari", y="Jam", color="Jumlah Dokter"), 
+                color_continuous_scale="Blues",
+                aspect="auto")
+fig.update_xaxes(side="top")
+st.plotly_chart(fig, use_container_width=True, height=400)
 
 # ---------------------------
-# Schedule View (improved table)
+# Kanban editor (per selected_day) - Updated
 # ---------------------------
-st.subheader("Tabel Jadwal (dapat disaring)")
-filtered = df[(df["Poli"].isin(poli_filter)) & (df["Jenis"].isin(jenis_filter))]
-if selected_day != "--Semua--":
-    filtered = filtered[filtered["Hari"]==selected_day]
-
-def style_rows(row):
-    if row["Over_Kuota"]:
-        return ["background-color:#ffb3b3;color:black"]*len(row)
-    if row["Bentrok"]:
-        return ["background-color:#ffd9b3;color:black"]*len(row)
-    if row["Kode"]=="R":
-        return ["background-color:#dff2d8;color:black"]*len(row)
-    # E default blue tint; Poleks/Eksek specifically blue
-    return ["background-color:#e8f0ff;color:black"]*len(row)
-
-st.dataframe(filtered.sort_values(["Hari","Jam","Poli","Dokter"]).reset_index(drop=True).style.apply(style_rows, axis=1), use_container_width=True)
-
-# ---------------------------
-# Kanban editor (per selected_day)
-# ---------------------------
-st.subheader("Kanban Editor")
+st.header("🎯 Kanban Editor")
 if selected_day == "--Semua--":
     st.info("Pilih satu hari di sidebar untuk membuka Kanban editor.")
 else:
@@ -315,97 +544,236 @@ else:
             st.session_state.kanban_state[selected_day] = lanes
 
         lanes = st.session_state.kanban_state[selected_day]
+        
+        # Create columns for Kanban
+        st.subheader(f"Kanban Editor - {selected_day}")
         cols = st.columns(min(len(SLOTS), 8))
-        col_objs = []
-        for i,s in enumerate(SLOTS):
-            col_objs.append(cols[i % len(cols)])
+        
         new_state = {s: list(lanes.get(s,[])) for s in SLOTS}
         moved_any = False
 
-        if DRAG_AVAILABLE:
-            for i,s in enumerate(SLOTS):
-                with col_objs[i % len(cols)]:
-                    st.markdown(f"**{s}**")
-                    cards = new_state[s]
-                    if not cards:
-                        st.info("—")
-                    else:
-                        tab = pd.DataFrame(cards)
-                        try:
-                            sorted_tab, moved = sort_table(tab, key="id", height="280px")
-                            new_cards = sorted_tab.to_dict(orient="records")
-                            new_state[s] = new_cards
-                            if moved:
-                                moved_any = True
-                        except Exception:
-                            st.dataframe(tab[["Dokter","Poli","Jenis","Kode","Over","Bentrok"]], use_container_width=True)
-        else:
-            st.warning("Drag & drop tidak tersedia. Gunakan 'Select & Move' di bawah.")
-            for i,s in enumerate(SLOTS):
-                with col_objs[i % len(cols)]:
-                    st.markdown(f"**{s}**")
-                    for c in new_state[s]:
-                        badge = "🟢" if c["Kode"]=="R" else ("🔵" if not c["Over"] else "🔴")
-                        st.markdown(f"{badge} **{c['Dokter']}** — {c['Poli']} ({c['Jenis']})")
+        # Display each time slot as a Kanban column
+        for i, s in enumerate(SLOTS):
+            with cols[i % len(cols)]:
+                # Column header with count
+                card_count = len(new_state[s])
+                st.markdown(f"### {s}")
+                st.markdown(f"**{card_count} dokter**")
+                
+                # Display cards in this time slot
+                cards = new_state[s]
+                if not cards:
+                    st.info("— Kosong —")
+                else:
+                    for card in cards:
+                        # Card styling based on type
+                        if card["Over"]:
+                            bg_color = "#ffb3b3"
+                            border_color = "#ff0000"
+                        elif card["Bentrok"]:
+                            bg_color = "#ffd9b3"
+                            border_color = "#ff9900"
+                        elif card["Kode"] == "R":
+                            bg_color = "#dff2d8"
+                            border_color = "#28a745"
+                        else:
+                            bg_color = "#e8f0ff"
+                            border_color = "#007bff"
+                        
+                        # Card HTML
+                        card_html = f"""
+                        <div style="
+                            background-color: {bg_color};
+                            border: 2px solid {border_color};
+                            border-radius: 8px;
+                            padding: 10px;
+                            margin: 5px 0;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        ">
+                            <div style="font-weight: bold; font-size: 14px;">{card['Dokter']}</div>
+                            <div style="font-size: 12px; color: #555;">
+                                <strong>Poli:</strong> {card['Poli']}<br>
+                                <strong>Jenis:</strong> {card['Jenis']}<br>
+                                <strong>Kode:</strong> {card['Kode']}
+                            </div>
+                        </div>
+                        """
+                        st.markdown(card_html, unsafe_allow_html=True)
 
-        if moved_any:
-            # reconstruct df for this day from new_state
-            df_other = df[df["Hari"]!=selected_day].copy()
-            new_rows = []
-            for s in SLOTS:
-                for c in new_state[s]:
-                    new_rows.append({"Hari":selected_day, "Jam":s, "Poli":c.get("Poli",""), "Jenis":c.get("Jenis",""), "Dokter":c.get("Dokter","")})
-            df_new = pd.concat([df_other, pd.DataFrame(new_rows)], ignore_index=True)
-            df_new = compute_status(df_new)
-            push_history(df_new.copy())
-            df = df_new.copy()
-            # refresh kanban_state
-            st.session_state.kanban_state[selected_day] = {}
-            for s in SLOTS:
-                rows_s = df[(df["Hari"]==selected_day)&(df["Jam"]==s)].reset_index(drop=True)
-                cards = [{"id": f"{selected_day}|{s}|{i}|{np.random.randint(1e9)}","Dokter":r["Dokter"],"Poli":r["Poli"],"Jenis":r["Jenis"],"Kode":r["Kode"],"Over":bool(r["Over_Kuota"]),"Bentrok":bool(r["Bentrok"])} for i,r in rows_s.iterrows()]
-                st.session_state.kanban_state[selected_day][s]=cards
-            st.success("Perubahan disimpan (session). Tekan Export untuk unduh.")
-
-        # Select & Move fallback
+        # Move functionality
         st.markdown("---")
-        st.write("Select & Move:")
-        all_cards=[]
+        st.subheader("Pindahkan Jadwal")
+        
+        # Collect all cards for selection
+        all_cards = []
         for s in SLOTS:
-            for c in new_state[s]:
-                cc = c.copy(); cc["Jam"]=s; all_cards.append(cc)
-        if len(all_cards)>0:
-            sel_idx = st.selectbox("Pilih kartu", options=list(range(len(all_cards))), format_func=lambda i: f"{all_cards[i]['Dokter']} — {all_cards[i]['Poli']} @ {all_cards[i]['Jam']}")
-            target_slot = st.selectbox("Target slot", SLOTS, index=0)
-            if st.button("Pindahkan kartu"):
-                card = all_cards[sel_idx]
-                orig = card["Jam"]
-                st.session_state.kanban_state[selected_day][orig] = [c for c in st.session_state.kanban_state[selected_day][orig] if not (c["Dokter"]==card["Dokter"] and c["Poli"]==card["Poli"])]
-                st.session_state.kanban_state[selected_day][target_slot].append({"id":f"{selected_day}|{target_slot}|{np.random.randint(1e9)}","Dokter":card["Dokter"],"Poli":card["Poli"],"Jenis":card["Jenis"],"Kode":card.get("Kode","E"),"Over":False,"Bentrok":False})
-                # rebuild df and compute status
-                df_other = df[df["Hari"]!=selected_day].copy()
-                new_rows=[]
-                for s in SLOTS:
-                    for c in st.session_state.kanban_state[selected_day][s]:
-                        new_rows.append({"Hari":selected_day,"Jam":s,"Poli":c.get("Poli",""),"Jenis":c.get("Jenis",""),"Dokter":c.get("Dokter","")})
-                df_new = pd.concat([df_other, pd.DataFrame(new_rows)], ignore_index=True)
-                df_new = compute_status(df_new)
-                push_history(df_new.copy())
-                df = df_new.copy()
-                st.success("Kartu dipindah dan status diperbarui.")
+            for card in new_state[s]:
+                card_copy = card.copy()
+                card_copy["Jam"] = s
+                all_cards.append(card_copy)
+        
+        if all_cards:
+            # Selection interface
+            col_select, col_move = st.columns([3, 2])
+            
+            with col_select:
+                # Format display for selection
+                options = []
+                display_texts = []
+                for i, card in enumerate(all_cards):
+                    display_text = f"{card['Dokter']} - {card['Poli']} ({card['Jenis']}) @ {card['Jam']}"
+                    if card["Over"]:
+                        display_text += " ⚠️ OVER"
+                    if card["Bentrok"]:
+                        display_text += " ⚠️ BENTROK"
+                    options.append(i)
+                    display_texts.append(display_text)
+                
+                selected_index = st.selectbox(
+                    "Pilih jadwal dokter:",
+                    options=options,
+                    format_func=lambda x: display_texts[x]
+                )
+                
+                # Show selected card details
+                if selected_index is not None:
+                    selected_card = all_cards[selected_index]
+                    st.info(f"**Terpilih:** {selected_card['Dokter']} - {selected_card['Poli']} @ {selected_card['Jam']}")
+            
+            with col_move:
+                target_slot = st.selectbox(
+                    "Pindahkan ke jam:",
+                    SLOTS,
+                    index=0 if SLOTS else None
+                )
+                
+                if st.button("🚀 Pindahkan Jadwal", type="primary", use_container_width=True):
+                    # Perform move
+                    card_to_move = all_cards[selected_index]
+                    original_slot = card_to_move["Jam"]
+                    
+                    # Remove from original slot
+                    st.session_state.kanban_state[selected_day][original_slot] = [
+                        c for c in st.session_state.kanban_state[selected_day][original_slot]
+                        if not (c["Dokter"] == card_to_move["Dokter"] and c["Poli"] == card_to_move["Poli"])
+                    ]
+                    
+                    # Add to target slot
+                    new_card = {
+                        "id": f"{selected_day}|{target_slot}|{np.random.randint(1e9)}",
+                        "Dokter": card_to_move["Dokter"],
+                        "Poli": card_to_move["Poli"],
+                        "Jenis": card_to_move["Jenis"],
+                        "Kode": card_to_move.get("Kode", "E"),
+                        "Over": False,
+                        "Bentrok": False
+                    }
+                    st.session_state.kanban_state[selected_day][target_slot].append(new_card)
+                    
+                    # Rebuild df and compute status
+                    df_other = df[df["Hari"] != selected_day].copy()
+                    new_rows = []
+                    
+                    for s in SLOTS:
+                        for c in st.session_state.kanban_state[selected_day][s]:
+                            new_rows.append({
+                                "Hari": selected_day,
+                                "Jam": s,
+                                "Poli": c.get("Poli", ""),
+                                "Jenis": c.get("Jenis", ""),
+                                "Dokter": c.get("Dokter", "")
+                            })
+                    
+                    df_new = pd.concat([df_other, pd.DataFrame(new_rows)], ignore_index=True)
+                    df_new = compute_status(df_new)
+                    
+                    # Update Excel view
+                    excel_view_df = create_excel_like_view(df_new)
+                    st.session_state.excel_view_df = excel_view_df
+                    
+                    # Update main df
+                    df = df_new.copy()
+                    
+                    # Add to history
+                    push_history(df.copy())
+                    
+                    st.success(f"✅ {card_to_move['Dokter']} dipindahkan dari {original_slot} ke {target_slot}")
+                    st.rerun()
 
 # ---------------------------
 # Export buttons
 # ---------------------------
 st.markdown("---")
-st.header("Export & Simpan")
-csv_bytes = df.to_csv(index=False).encode("utf-8")
-st.download_button("Download CSV", csv_bytes, file_name="jadwal_updated.csv", mime="text/csv")
-# xlsx
-def to_xlsx_bytes(df_in):
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        df_in.to_excel(writer, index=False, sheet_name="Jadwal")
-    return out.getvalue()
-xlsx_bytes = to_xlsx_bytes(df)
-st.download_button("Download XLSX", xlsx_bytes, file_name="jadwal_updated.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.header("💾 Export & Simpan")
+
+export_cols = st.columns(3)
+
+with export_cols[0]:
+    # Export CSV (detailed)
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Download CSV (Detail)",
+        csv_bytes,
+        file_name="jadwal_detail.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+with export_cols[1]:
+    # Export Excel (detailed)
+    def to_xlsx_bytes(df_in):
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine="openpyxl") as writer:
+            df_in.to_excel(writer, index=False, sheet_name="Jadwal_Detail")
+        return out.getvalue()
+    
+    xlsx_bytes = to_xlsx_bytes(df)
+    st.download_button(
+        "📥 Download XLSX (Detail)",
+        xlsx_bytes,
+        file_name="jadwal_detail.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+with export_cols[2]:
+    # Export Excel-like view
+    def to_excel_view_xlsx(df_in):
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine="openpyxl") as writer:
+            df_in.to_excel(writer, index=False, sheet_name="Jadwal_Excel_View")
+        return out.getvalue()
+    
+    excel_view_xlsx = to_excel_view_xlsx(st.session_state.excel_view_df)
+    st.download_button(
+        "📊 Download Excel View",
+        excel_view_xlsx,
+        file_name="jadwal_excel_view.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+# ---------------------------
+# Quick Stats
+# ---------------------------
+st.markdown("---")
+st.subheader("📋 Statistik Cepat")
+
+# Create a summary by Poli
+poli_summary = df.groupby(["Poli", "Jenis"]).size().reset_index(name="Jumlah Slot")
+poli_pivot = poli_summary.pivot(index="Poli", columns="Jenis", values="Jumlah Slot").fillna(0)
+
+# Display as metrics
+st.write("**Jumlah Slot per Poli:**")
+cols = st.columns(min(4, len(poli_pivot)))
+for idx, (poli, row) in enumerate(poli_pivot.iterrows()):
+    with cols[idx % len(cols)]:
+        total = row.sum()
+        reguler = row.get("Reguler", 0)
+        eksekutif = row.get("Eksekutif", 0)
+        
+        st.metric(
+            label=f"🩺 {poli}",
+            value=int(total),
+            delta=f"R:{int(reguler)} E:{int(eksekutif)}"
+        )
