@@ -1,8 +1,12 @@
+# Core
 streamlit
 pandas
 openpyxl
 numpy
-plotly
+
+# File monitoring
+watchdog
+
+# Additional
 python-dateutil
-setuptools
-wheel
+python-dotenv
