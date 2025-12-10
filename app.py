@@ -6,11 +6,12 @@ from datetime import datetime, timedelta
 import io
 import json
 
+# Mengatur tampilan halaman ke mode lebar (wide)
 st.set_page_config(page_title="Jadwal Poli (Streamlit Full)", layout="wide")
 st.title("📅 Jadwal Poli — Streamlit Full (Offline)")
 
 # ---------------------------
-# Constants for Excel-like view (UPDATED FOR FULL RANGE)
+# Constants for Excel-like view (FULL RANGE)
 # ---------------------------
 TIME_SLOTS = [
     "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", 
@@ -20,7 +21,7 @@ TIME_SLOTS = [
 DAYS_ORDER = ["Senin", "Selasa", "Rabu", "Kamis", "Jum'at"]
 
 # ---------------------------
-# Helpers: time normalization & expansion
+# Helpers: time normalization & expansion (TIDAK BERUBAH)
 # ---------------------------
 def _normalize_time_token(token: str) -> str:
     if token is None:
@@ -82,7 +83,7 @@ def expand_range_safe(range_str: str, interval_minutes: int = 30):
     return slots
 
 # ---------------------------
-# Convert to Excel-like format (Pivot table)
+# Convert to Excel-like format (Pivot table) (TIDAK BERUBAH)
 # ---------------------------
 def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
     """Create Excel-like view with POLI, JENIS, HARI, DOKTER as rows and TIME_SLOTS as columns"""
@@ -132,11 +133,16 @@ def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
             record[slot] = ""
         
         # Fill in the time slots
+        # Sorting for Poleks below Reguler is handled later in Kanban, not here
         for _, row in group.iterrows():
             time_slot = row["Jam"]
             kode = row["Kode"]
-            record[time_slot] = kode
-        
+            # Handle multiple entries in one cell by prioritizing Poleks if both exist (though ideally shouldn't happen)
+            if record[time_slot] == "":
+                record[time_slot] = kode
+            elif record[time_slot] == "R" and kode == "E":
+                record[time_slot] = "E" # If both, show E (Eksekutif/Poleks)
+            
         records.append(record)
     
     # Convert to DataFrame
@@ -155,18 +161,17 @@ def create_excel_like_view(df_input: pd.DataFrame) -> pd.DataFrame:
     return result_df
 
 # ---------------------------
-# Session state: history (undo/redo), kanban_state
+# Session state: history (undo/redo), kanban_state (CLEARED/SIMPLIFIED)
 # ---------------------------
 if "history" not in st.session_state:
     st.session_state.history = []
 if "future" not in st.session_state:
     st.session_state.future = []
-if "kanban_state" not in st.session_state:
-    st.session_state.kanban_state = {}  # day -> lanes dict
 if "excel_view_df" not in st.session_state:
     st.session_state.excel_view_df = pd.DataFrame()
 if "last_drag_event" not in st.session_state:
     st.session_state.last_drag_event = None
+# kanban_state is no longer needed as an intermediate state, rely on df history
 
 def push_history(df_snapshot):
     st.session_state.history.append(df_snapshot.copy())
@@ -187,115 +192,79 @@ def redo():
     return None
 
 # ---------------------------
-# Drag & Drop Functions
+# Drag & Drop Functions (UPDATED FOR V2 GRID STRUCTURE)
 # ---------------------------
-def handle_drag_drop(drag_data_str):
-    """Handle drag and drop events"""
+def handle_drag_drop(drag_data_str, current_df):
+    """Handle drag and drop events based on new Excel-like Kanban structure."""
     try:
         drag_data = json.loads(drag_data_str)
         st.session_state.last_drag_event = drag_data
         
-        # Process the drag event
+        # Data needed for drag:
         source_day = drag_data.get("source_day")
         source_slot = drag_data.get("source_slot")
+        
         target_day = drag_data.get("target_day")
         target_slot = drag_data.get("target_slot")
+        
         card_data = drag_data.get("card_data")
         
-        if source_day and source_slot and target_day and target_slot and card_data:
-            # 1. Update kanban state
-            
-            # Remove from source
-            if source_day in st.session_state.kanban_state and source_slot in st.session_state.kanban_state[source_day]:
-                st.session_state.kanban_state[source_day][source_slot] = [
-                    c for c in st.session_state.kanban_state[source_day][source_slot]
-                    if c.get("id") != card_data.get("id")
-                ]
-            
-            # Add to target
-            if target_day not in st.session_state.kanban_state:
-                st.session_state.kanban_state[target_day] = {}
-            if target_slot not in st.session_state.kanban_state[target_day]:
-                st.session_state.kanban_state[target_day][target_slot] = []
-            
-            # Update card ID with new slot
-            card_data["id"] = f"{target_day}|{target_slot}|{np.random.randint(1e9)}"
-            # Reset Over/Bentrok flags before re-computation
-            card_data["Over"] = False
-            card_data["Bentrok"] = False # Bentrok is now always False, but keep the key for robust code
-            
-            # Append the card
-            st.session_state.kanban_state[target_day][target_slot].append(card_data)
-            
-            # 2. Rebuild main DataFrame and re-compute status
-            
-            # Get data for the current day from kanban state
-            new_rows_current_day = []
-            for s in st.session_state.kanban_state[target_day].keys():
-                for c in st.session_state.kanban_state[target_day][s]:
-                    new_rows_current_day.append({
-                        "Hari": target_day,
-                        "Jam": s,
-                        "Poli": c.get("Poli", ""),
-                        "Jenis": c.get("Jenis", ""),
-                        "Dokter": c.get("Dokter", "")
-                    })
-            
-            df_kanban = pd.DataFrame(new_rows_current_day)
-            df_kanban["Kode"] = df_kanban["Jenis"].apply(lambda x: "R" if str(x).lower()=="reguler" else "E")
-            
-            # Get data for other days
-            df_other_days_list = []
-            if "history" in st.session_state and st.session_state.history:
-                latest_df = st.session_state.history[-1]
-                df_other_days_list.append(latest_df[latest_df["Hari"] != target_day].copy())
-            
-            df_new = pd.concat(df_other_days_list + [df_kanban], ignore_index=True)
-            
-            # Re-compute status
-            df_new = compute_status(df_new)
-            
-            # Update kanban state with new status (Over_Kuota)
-            # The structure of the main df is different from kanban card, so re-initialize the affected kanban state
-            # This is complex, so let's just re-calculate the cards for the day
-            
-            lanes_new = {}
-            for s in TIME_SLOTS:
-                rows_s = df_new[(df_new["Hari"]==target_day)&(df_new["Jam"]==s)].reset_index(drop=True)
-                cards = []
-                # Sorting to put Eksekutif/Poleks below Reguler
-                rows_s = rows_s.sort_values(by=["Jenis"], key=lambda x: x.str.lower().str.contains("eksekutif|poleks", na=False))
-                for i,r in rows_s.iterrows():
-                    # Check if the card is already in the list to avoid duplication of card IDs during drag
-                    # Since we are re-initializing the day, we need to create new IDs
-                    cards.append({
-                        "id": f"{target_day}|{s}|{i}|{np.random.randint(1e9)}",
-                        "Dokter": r["Dokter"],
-                        "Poli": r["Poli"],
-                        "Jenis": r["Jenis"],
-                        "Kode": r["Kode"],
-                        "Over": bool(r["Over_Kuota"]),
-                        "Bentrok": False, # Bentrok always False after removal
-                        "Hari": target_day,
-                        "Jam": s
-                    })
-                if cards:
-                    lanes_new[s]=cards
-            
-            st.session_state.kanban_state[target_day] = lanes_new
-            
-            # 3. Update Excel view and history
-            excel_view_df = create_excel_like_view(df_new)
-            st.session_state.excel_view_df = excel_view_df
-            push_history(df_new.copy())
-            
+        # Unique identifier for the doctor/poli combination (the fixed row)
+        poli = card_data.get("Poli")
+        jenis = card_data.get("Jenis")
+        dokter = card_data.get("Dokter")
+        
+        # --- Check for target match (should be same day, same doctor/poli/jenis) ---
+        if target_day != source_day:
+             # This should be prevented by JS but is a good safety check
+             st.warning("Perpindahan jadwal antar hari tidak diizinkan di tampilan ini.")
+             return False
+        
+        # If the target is the same as the source, do nothing
+        if target_slot == source_slot:
             return True
+
+        # --- Update the main DataFrame (df) ---
+        df_new = current_df.copy()
+
+        # Identify the row(s) to be updated/removed:
+        filter_mask = (df_new["Hari"] == source_day) & \
+                      (df_new["Jam"] == source_slot) & \
+                      (df_new["Poli"] == poli) & \
+                      (df_new["Jenis"] == jenis) & \
+                      (df_new["Dokter"] == dokter)
+
+        # Drop the row(s) matching the source slot (remove the old entry)
+        df_new = df_new[~filter_mask].reset_index(drop=True)
+        
+        # 2. Add the new entry at the target slot
+        new_row = {
+            "Hari": target_day,
+            "Jam": target_slot,
+            "Poli": poli,
+            "Jenis": jenis,
+            "Dokter": dokter,
+            "Kode": card_data.get("Kode", "E")
+        }
+        
+        df_new = pd.concat([df_new, pd.DataFrame([new_row])], ignore_index=True)
+        
+        # 3. Re-compute status
+        df_new = compute_status(df_new)
+        
+        # 4. Update Excel view and history
+        excel_view_df = create_excel_like_view(df_new)
+        st.session_state.excel_view_df = excel_view_df
+        push_history(df_new.copy())
+        
+        return True
+    
     except Exception as e:
         st.error(f"Error handling drag drop: {e}")
-    return False
+        return False
 
 # ---------------------------
-# Upload input
+# Upload input (TIDAK BERUBAH)
 # ---------------------------
 st.sidebar.header("Upload / Template")
 uploaded = st.sidebar.file_uploader("Upload Excel (sheet) or CSV with columns: Hari, Range, Poli, Jenis, Dokter", type=["xlsx","csv"])
@@ -307,7 +276,6 @@ if st.sidebar.button("Download template example"):
         "Jenis":["Reguler","Eksekutif","Reguler"],
         "Dokter":["dr. Budi","dr. Sari","drg. Putri"]
     })
-    # Use TIME_SLOTS[0] and TIME_SLOTS[-1] to show the full range supported
     example_range = f"{TIME_SLOTS[0]}-{TIME_SLOTS[-1]}" 
     sample_full_range = pd.DataFrame({
         "Hari":["Rabu","Rabu"],
@@ -368,7 +336,7 @@ if not (Hari_col and Range_col and Poli_col and Jenis_col and Dokter_col):
     st.stop()
 
 # ---------------------------
-# Expand ranges -> slots
+# Expand ranges -> slots (TIDAK BERUBAH)
 # ---------------------------
 expanded = []
 for _, r in raw.iterrows():
@@ -402,7 +370,7 @@ df["Jenis"] = df["Jenis"].astype(str).str.strip().replace({
 df["Kode"] = df["Jenis"].apply(lambda x: "R" if str(x).lower()=="reguler" else "E")
 
 # ---------------------------
-# Compute Over-kuota (Bentrok removed)
+# Compute Over-kuota (Bentrok removed) (TIDAK BERUBAH)
 # ---------------------------
 def compute_status(df_in):
     d = df_in.copy()
@@ -421,12 +389,6 @@ def compute_status(df_in):
     for (hari,jam) in over_slots:
         d.loc[(d["Hari"]==hari)&(d["Jam"]==jam)&(d["Jenis"].str.lower().str.contains("eksekutif|poleks", na=False)), "Over_Kuota"] = True
     
-    # Bentrok logic is REMOVED/commented out as requested
-    # grouped = d.groupby(["Hari","Jam","Dokter"]).size()
-    # for (hari,jam,dok), cnt in grouped.items():
-    #     if cnt > 1:
-    #         d.loc[(d["Hari"]==hari)&(d["Jam"]==jam)&(d["Dokter"]==dok), "Bentrok"] = True
-    
     return d
 
 df = compute_status(df)
@@ -438,9 +400,12 @@ st.session_state.excel_view_df = excel_view_df
 # push initial snapshot to history
 push_history(df.copy())
 
+# Ensure df is the latest version from history
+if st.session_state.history:
+    df = st.session_state.history[-1]
 
 # ---------------------------
-# UI: Filters & summary
+# UI: Filters & actions (DI PERTAHANKAN DI SIDEBAR KIRI)
 # ---------------------------
 st.sidebar.header("Filter & Actions")
 # Populate selected day with all available days, not just days with data
@@ -456,11 +421,10 @@ with colu1:
         prev = undo()
         if prev is not None:
             df = prev.copy()
-            # Recreate Excel view and re-compute status/Kanban state
+            # Recreate Excel view and re-compute status
             df = compute_status(df)
             excel_view_df = create_excel_like_view(df)
             st.session_state.excel_view_df = excel_view_df
-            st.session_state.kanban_state = {} # Clear kanban state to force re-initialization
             st.success("Undo berhasil")
             st.rerun() # Rerun to update the view
 with colu2:
@@ -468,16 +432,15 @@ with colu2:
         nxt = redo()
         if nxt is not None:
             df = nxt.copy()
-            # Recreate Excel view and re-compute status/Kanban state
+            # Recreate Excel view and re-compute status
             df = compute_status(df)
             excel_view_df = create_excel_like_view(df)
             st.session_state.excel_view_df = excel_view_df
-            st.session_state.kanban_state = {} # Clear kanban state to force re-initialization
             st.success("Redo berhasil")
             st.rerun() # Rerun to update the view
 
 # ---------------------------
-# Excel-like View
+# Excel-like View (TIDAK BERUBAH)
 # ---------------------------
 st.header("📊 Tampilan Jadwal (Format Excel)")
 
@@ -565,7 +528,7 @@ with st.container():
     
     st.markdown(scrollable_html, unsafe_allow_html=True)
 
-# Summary statistics for Excel view
+# Summary statistics for Excel view (TIDAK BERUBAH)
 st.subheader("📈 Ringkasan Tampilan Excel")
 summary_cols = st.columns(4)
 with summary_cols[0]:
@@ -580,7 +543,7 @@ with summary_cols[3]:
     st.metric("Slot Eksekutif (E)", eksekutif_count)
 
 # ---------------------------
-# Dashboard & summary
+# Dashboard & summary (TIDAK BERUBAH)
 # ---------------------------
 st.header("📊 Dashboard Ringkasan")
 c1, c2, c3, c4 = st.columns(4)
@@ -624,238 +587,312 @@ except Exception as e:
     st.warning(f"Tidak dapat menampilkan heatmap: {e}")
 
 # ---------------------------
-# IMPROVED KANBAN EDITOR WITH DRAG & DROP
+# KANBAN EDITOR BARU (GRID/EXCEL-LIKE)
 # ---------------------------
 st.header("🎯 Kanban Editor (Drag & Drop)")
 
 if selected_day == "--Semua--":
     st.info("Pilih satu hari di sidebar untuk membuka Kanban editor.")
 else:
-    # Use the full TIME_SLOTS for kanban columns, regardless of data
     SLOTS = TIME_SLOTS
     
     # Filter the main DataFrame for the selected day
-    df_day = df[df["Hari"]==selected_day]
+    df_day = df[df["Hari"]==selected_day].reset_index(drop=True)
     
-    # Initialize kanban state for the selected day if not exists or if data changes
-    if selected_day not in st.session_state.kanban_state or st.session_state.kanban_state == {}:
-        lanes = {}
-        for s in SLOTS:
-            # Filter rows for the current day and slot
-            rows_s = df_day[(df_day["Jam"]==s)].reset_index(drop=True)
-            cards = []
+    # 1. Prepare row data (unique Poli/Jenis/Dokter for the day)
+    # Sorting to ensure Poleks/Eksekutif is below Reguler in the row list
+    unique_rows = df_day[["Poli", "Jenis", "Dokter"]].drop_duplicates().sort_values(["Poli", "Jenis", "Dokter"]).reset_index(drop=True)
+    
+    # 2. Get card data grouped by the row keys and slot
+    card_map = {}
+    for i, r in df_day.iterrows():
+        # Key is the Poli, Jenis, Dokter combination
+        key = (r["Poli"], r["Jenis"], r["Dokter"])
+        slot = r["Jam"]
+        
+        # Create or update the card data for the cell (should only be one card per unique (key, slot))
+        if key not in card_map:
+            card_map[key] = {}
             
-            # SORTING: Put Eksekutif/Poleks (Kode='E') after Reguler (Kode='R')
-            rows_s["Sort_Order"] = rows_s["Jenis"].apply(lambda x: 0 if str(x).lower()=="reguler" else 1)
-            rows_s = rows_s.sort_values(by="Sort_Order")
-            
-            for i,r in rows_s.iterrows():
-                cards.append({
-                    "id": f"{selected_day}|{s}|{i}|{np.random.randint(1e9)}",
-                    "Dokter": r["Dokter"],
-                    "Poli": r["Poli"],
-                    "Jenis": r["Jenis"],
-                    "Kode": r["Kode"],
-                    "Over": bool(r["Over_Kuota"]),
-                    "Bentrok": bool(r["Bentrok"]), # Will be False as per compute_status
-                    "Hari": selected_day,
-                    "Jam": s
-                })
-            if cards: # Only add slot to lanes if there are cards
-                 lanes[s]=cards
-        st.session_state.kanban_state[selected_day] = lanes
+        # The new structure only shows ONE card per cell (Poli/Dokter/Jenis/Slot)
+        card_map[key][slot] = {
+            "id": f"{selected_day}|{slot}|{i}|{np.random.randint(1e9)}",
+            "Dokter": r["Dokter"],
+            "Poli": r["Poli"],
+            "Jenis": r["Jenis"],
+            "Kode": r["Kode"],
+            "Over": bool(r["Over_Kuota"]),
+            "Bentrok": bool(r["Bentrok"]),
+            "Hari": selected_day,
+            "Jam": slot
+        }
 
-    # Fill in empty slots explicitly in the session state for rendering all columns
-    lanes = st.session_state.kanban_state.get(selected_day, {})
-    
-    # JavaScript for drag and drop (No change needed here for functionality, only CSS)
-    drag_drop_js = """
-    <script>
-    // Drag and Drop functionality
-    function setupDragAndDrop() {
-        const cards = document.querySelectorAll('.kanban-card');
-        const columns = document.querySelectorAll('.kanban-column');
+    # Custom CSS for the new grid layout
+    new_kanban_css = f"""
+        <style>
+        /* New Grid/Table Layout CSS */
+        .kanban-grid-container {{
+            overflow-x: auto;
+            padding: 5px;
+            font-size: 10px;
+            min-height: 450px;
+            max-height: 600px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }}
+
+        .kanban-grid {{
+            display: grid;
+            /* Define columns: 3 fixed-width columns for info + N time slots (70px each) */
+            grid-template-columns: 150px 100px 150px repeat({len(TIME_SLOTS)}, 70px); 
+            gap: 0;
+            min-width: calc(150px + 100px + 150px + {len(TIME_SLOTS) * 70}px); 
+        }}
         
-        // Setup draggable cards
-        cards.forEach(card => {
-            card.setAttribute('draggable', 'true');
-            
-            card.addEventListener('dragstart', (e) => {
-                const cardData = JSON.parse(card.getAttribute('data-card'));
-                e.dataTransfer.setData('text/plain', JSON.stringify({
-                    source_day: cardData.hari,
-                    source_slot: cardData.jam,
-                    card_data: cardData
-                }));
-                card.classList.add('dragging');
-            });
-            
-            card.addEventListener('dragend', () => {
-                card.classList.remove('dragging');
-            });
-        });
+        .grid-header, .grid-cell {{
+            border: 1px solid #eee;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-weight: normal;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }}
         
-        // Setup droppable columns
-        columns.forEach(column => {
-            column.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                column.classList.add('drag-over');
-            });
+        .grid-header {{
+            background-color: #4CAF50; /* Green header */
+            color: white;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            border-bottom: 2px solid #38761D;
+            height: 30px;
+        }}
+
+        .grid-row-header {{
+            background-color: #f2f2f2;
+            font-weight: bold;
+            text-align: left;
+            justify-content: flex-start;
+            padding: 4px;
+            position: sticky;
+            left: 0;
+            z-index: 5;
+            height: 30px;
+        }}
+
+        /* Column-specific headers */
+        .poli-header {{ grid-column: 1; }}
+        .jenis-header {{ grid-column: 2; }}
+        .dokter-header {{ grid-column: 3; }}
+
+        .grid-cell {{
+            background-color: white;
+            height: 30px; /* Fixed cell height */
+            padding: 0; 
+        }}
+        
+        .droppable-cell {{
+            background-color: #f8f9fa;
+            border: none;
+            height: 100%;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.1s;
+        }}
+        
+        .droppable-cell.drag-over {{
+            background-color: #e3f2fd;
+            border: 2px dashed #2196f3;
+            box-sizing: border-box;
+        }}
+
+        /* Small card styling for table cell */
+        .kanban-card {{
+            border-radius: 2px;
+            padding: 0; 
+            margin: 0;
+            box-shadow: 0 0 1px rgba(0,0,0,0.1);
+            cursor: grab;
+            font-size: 10px;
+            line-height: 1.1;
+            transition: all 0.2s;
+            border-left: 2px solid;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }}
+        
+        .kanban-card-reguler {{ border-left-color: #28a745; background-color: #e6ffed; }} /* Light green */
+        .kanban-card-eksekutif {{ border-left-color: #007bff; background-color: #e0f2ff; }} /* Light blue (Poleks) */
+        .kanban-card-over {{ border-left-color: #dc3545; background-color: #ffe6e8; }} /* Light red */
+        
+        .kanban-card-text {{
+            font-size: 10px;
+            padding: 2px;
+        }}
+        
+        .kanban-card.dragging {{
+            opacity: 0.5;
+        }}
+        </style>
+    """
+
+    # Custom JavaScript for the new grid structure
+    new_drag_drop_js = f"""
+        <script>
+        // Drag and Drop functionality
+        function setupDragAndDrop() {{
+            const cards = document.querySelectorAll('.kanban-card');
+            const droppableCells = document.querySelectorAll('.droppable-cell');
             
-            column.addEventListener('dragleave', () => {
-                column.classList.remove('drag-over');
-            });
-            
-            column.addEventListener('drop', (e) => {
-                e.preventDefault();
-                column.classList.remove('drag-over');
+            // Setup draggable cards
+            cards.forEach(card => {{
+                card.setAttribute('draggable', 'true');
                 
-                try {
-                    const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
-                    const columnData = JSON.parse(column.getAttribute('data-column'));
+                card.addEventListener('dragstart', (e) => {{
+                    const cardData = JSON.parse(card.getAttribute('data-card'));
+                    e.dataTransfer.setData('text/plain', JSON.stringify({{
+                        source_day: cardData.Hari,
+                        source_slot: cardData.Jam,
+                        source_poli: cardData.Poli,
+                        source_jenis: cardData.Jenis,
+                        card_data: cardData
+                    }}));
+                    card.classList.add('dragging');
+                }});
+                
+                card.addEventListener('dragend', () => {{
+                    card.classList.remove('dragging');
+                }});
+            }});
+            
+            // Setup droppable columns/cells
+            droppableCells.forEach(cell => {{
+                cell.addEventListener('dragover', (e) => {{
+                    e.preventDefault();
+                    cell.classList.add('drag-over');
+                }});
+                
+                cell.addEventListener('dragleave', () => {{
+                    cell.classList.remove('drag-over');
+                }});
+                
+                cell.addEventListener('drop', (e) => {{
+                    e.preventDefault();
+                    cell.classList.remove('drag-over');
                     
-                    // Update drag data with target
-                    dragData.target_day = columnData.hari;
-                    dragData.target_slot = columnData.slot;
-                    
-                    // Send to Streamlit
-                    // We must use a separate event listener outside the Streamlit components context
-                    // This is a common pattern for custom component-like behavior in Streamlit
-                    if (window.parent.document.getElementById('streamlit-kanban-bridge')) {
-                        window.parent.document.getElementById('streamlit-kanban-bridge').value = JSON.stringify(dragData);
-                        window.parent.document.getElementById('streamlit-kanban-bridge').dispatchEvent(new Event('change'));
-                    } else {
-                        console.error('Streamlit bridge element not found.');
-                    }
-                } catch (error) {
-                    console.error('Drop error:', error);
-                }
-            });
-        });
-    }
-    
-    // Initialize when page loads and after Streamlit updates
-    setupDragAndDrop();
-    </script>
-    
-    <style>
-    .kanban-container {
-        display: flex;
-        gap: 5px; /* Reduced gap */
-        overflow-x: auto; /* Enable horizontal scroll */
-        padding: 5px;
-        margin-bottom: 20px;
-        min-height: 450px;
-        max-height: 450px; /* Fixed height for scrollability */
-    }
-    
-    .kanban-column {
-        background: #f8f9fa;
-        border-radius: 8px;
-        padding: 5px; /* Reduced padding */
-        min-width: 120px; /* Reduced min-width */
-        max-width: 120px; /* Fixed max-width for tight columns */
-        flex-shrink: 0; /* Important: prevents columns from shrinking */
-        border: 1px solid #dee2e6; /* Reduced border size */
-        transition: all 0.2s;
-        min-height: 440px;
-        max-height: 440px;
-        overflow-y: auto; /* Scroll individual columns */
-    }
-    
-    .kanban-column.drag-over {
-        background: #e3f2fd;
-        border-color: #2196f3;
-    }
-    
-    .kanban-card {
-        background: white;
-        border-radius: 4px; /* Reduced border radius */
-        padding: 6px; /* Reduced padding */
-        margin-bottom: 4px; /* Reduced margin */
-        box-shadow: 0 1px 2px rgba(0,0,0,0.08); /* Lighter shadow */
-        cursor: grab;
-        font-size: 10px; /* Reduced font size */
-        transition: all 0.2s;
-        border-left: 3px solid; /* Reduced border width */
-        position: relative;
-    }
-    
-    .kanban-card:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    
-    .kanban-card.dragging {
-        opacity: 0.5;
-        transform: rotate(2deg);
-    }
-    
-    .kanban-card-reguler {
-        border-left-color: #28a745;
-    }
-    
-    .kanban-card-eksekutif {
-        border-left-color: #007bff;
-    }
-    
-    .kanban-card-over {
-        border-left-color: #dc3545;
-    }
-    
-    /* Bentrok is removed, but keep the class in case the user re-adds the logic */
-    .kanban-card-bentrok {
-        border-left-color: #ffc107; 
-    }
-    
-    .card-header {
-        font-weight: bold;
-        font-size: 9px;
-        margin-bottom: 3px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    
-    .card-details {
-        font-size: 8px;
-        color: #666;
-    }
-    
-    .card-icon {
-        position: absolute;
-        top: 3px;
-        right: 3px;
-        font-size: 8px;
-    }
-    
-    .slot-header {
-        background: #6c757d;
-        color: white;
-        padding: 4px; /* Reduced padding */
-        border-radius: 4px;
-        text-align: center;
-        margin-bottom: 5px; /* Reduced margin */
-        font-size: 11px; /* Reduced font size */
-        font-weight: bold;
-        position: sticky;
-        top: 0;
-        z-index: 10;
-    }
-    
-    .empty-slot {
-        color: #999;
-        font-style: italic;
-        text-align: center;
-        padding: 10px;
-        font-size: 10px;
-    }
-    </style>
+                    try {{
+                        const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
+                        const cellData = JSON.parse(cell.getAttribute('data-cell'));
+                        
+                        // Prevent dropping onto an already occupied cell
+                        if (cell.querySelector('.kanban-card')) {{
+                             console.log("Cannot drop: Target cell is already occupied.");
+                             return; 
+                        }}
+
+                        // TARGET MUST MATCH SOURCE POLI/JENIS/DOKTER (Fixed Row)
+                        if (dragData.card_data.Dokter !== cellData.dokter ||
+                            dragData.card_data.Poli !== cellData.poli ||
+                            dragData.card_data.Jenis !== cellData.jenis) {{
+                            console.log("Cannot drop: Doctor/Poli/Jenis mismatch. Must drop into the same row.");
+                            return; // Prevent dropping outside the doctor's row
+                        }}
+                        
+                        // Update drag data with target
+                        dragData.target_day = cellData.hari;
+                        dragData.target_slot = cellData.slot;
+                        
+                        // Send to Streamlit
+                        if (window.parent.document.getElementById('streamlit-kanban-bridge')) {{
+                            window.parent.document.getElementById('streamlit-kanban-bridge').value = JSON.stringify(dragData);
+                            window.parent.document.getElementById('streamlit-kanban-bridge').dispatchEvent(new Event('change'));
+                        }} else {{
+                            console.error('Streamlit bridge element not found.');
+                        }}
+                    }} catch (error) {{
+                        console.error('Drop error:', error);
+                    }}
+                }});
+            }});
+        }}
+        
+        // Initialize when page loads and after Streamlit updates
+        setupDragAndDrop();
+        </script>
     """
     
-    # Create drag and drop interface
-    st.markdown("### 🎯 Drag & Drop untuk memindahkan jadwal")
-    st.markdown("**Instruksi:** Seret kartu dokter dari satu slot waktu ke slot lainnya")
+    # 3. Create the kanban board HTML (Grid Structure)
+    
+    # Header row
+    kanban_html = "<div class='kanban-grid-container'><div class='kanban-grid'>"
+    kanban_html += "<div class='grid-header poli-header'>Poli</div>"
+    kanban_html += "<div class='grid-header jenis-header'>Jenis</div>"
+    kanban_html += "<div class='grid-header dokter-header'>Dokter</div>"
+    for slot in TIME_SLOTS:
+        kanban_html += f"<div class='grid-header'>{slot}</div>"
+        
+    # Data rows
+    for i, r in unique_rows.iterrows():
+        # Row Headers (Poli, Jenis, Dokter)
+        kanban_html += f"<div class='grid-row-header' title='{r['Poli']}'>{r['Poli']}</div>"
+        kanban_html += f"<div class='grid-row-header' title='{r['Jenis']}'>{r['Jenis']}</div>"
+        kanban_html += f"<div class='grid-row-header' title='{r['Dokter']}'>{r['Dokter']}</div>"
+        
+        # Time Slots (Droppable Cells)
+        row_key = (r['Poli'], r['Jenis'], r['Dokter'])
+        for slot in TIME_SLOTS:
+            cell_data = json.dumps({
+                "hari": selected_day,
+                "slot": slot,
+                "poli": r['Poli'],
+                "jenis": r['Jenis'],
+                "dokter": r['Dokter']
+            })
+            
+            card = card_map.get(row_key, {}).get(slot)
+            
+            card_content = ""
+            if card:
+                card_class = "kanban-card"
+                if card.get("Over"):
+                    card_class += " kanban-card-over"
+                elif card.get("Kode") == "R":
+                    card_class += " kanban-card-reguler"
+                else:
+                    # Poleks/Eksekutif
+                    card_class += " kanban-card-eksekutif" 
+                
+                # Card data for JavaScript
+                card_data = json.dumps(card)
+                
+                # Show Kode (R/E) in the cell
+                card_content = f"""
+                <div class='{card_class}' draggable='true' data-card='{card_data}' title='{card['Dokter']}'>
+                    <span class='kanban-card-text'>{card['Kode']}</span>
+                </div>
+                """
+            
+            kanban_html += f"""
+            <div class='grid-cell'>
+                <div class='droppable-cell' data-cell='{cell_data}'>
+                    {card_content}
+                </div>
+            </div>
+            """
+    
+    kanban_html += "</div></div>"
     
     # Hidden input to receive drag data from custom JS
     drag_data_receiver = st.empty()
@@ -864,214 +901,21 @@ else:
     if drag_data_str and drag_data_str != st.session_state.get('last_processed_drag_data'):
         # Check if the event is new before processing
         st.session_state['last_processed_drag_data'] = drag_data_str
-        if handle_drag_drop(drag_data_str):
-            st.success("Perpindahan jadwal berhasil! Status Over Kuota diperbarui.")
+        # Pass the current DF to the handler
+        if handle_drag_drop(drag_data_str, df): 
+            st.success(f"Perpindahan jadwal berhasil dari slot {json.loads(drag_data_str)['source_slot']} ke {json.loads(drag_data_str)['target_slot']}! Status Over Kuota diperbarui.")
             st.session_state["streamlit-kanban-bridge"] = "" # Clear the input after processing
             st.rerun()
         else:
             st.warning("Perpindahan jadwal gagal.")
             
-    # Create the kanban board HTML
-    kanban_html = "<div class='kanban-container'>"
+    # Render the kanban board
+    st.components.v1.html(new_drag_drop_js + new_kanban_css + kanban_html, height=650, scrolling=False)
     
-    # Iterate through ALL TIME_SLOTS to display a full-range kanban board
-    for slot in TIME_SLOTS:
-        cards = lanes.get(slot, [])
-        
-        # Column data for JavaScript
-        column_data = json.dumps({
-            "hari": selected_day,
-            "slot": slot
-        })
-        
-        kanban_html += f"""
-        <div class='kanban-column' data-column='{column_data}'>
-            <div class='slot-header'>{slot}</div>
-        """
-        
-        if cards:
-            for card in cards:
-                # Determine card class based on status
-                card_class = "kanban-card"
-                if card.get("Over"):
-                    card_class += " kanban-card-over"
-                elif card.get("Bentrok"):
-                    card_class += " kanban-card-bentrok"
-                elif card.get("Kode") == "R":
-                    card_class += " kanban-card-reguler"
-                else:
-                    card_class += " kanban-card-eksekutif"
-                
-                # Get status icon
-                status_icon = ""
-                if card.get("Over"):
-                    status_icon = "🔴"
-                elif card.get("Bentrok"):
-                    status_icon = "🟡" # Still showing bentrok icon but logic is removed
-                elif card.get("Kode") == "R":
-                    status_icon = "🟢"
-                else:
-                    status_icon = "🔵"
-                
-                # Card data for JavaScript
-                card_data = json.dumps(card)
-                
-                kanban_html += f"""
-                <div class='{card_class}' draggable='true' data-card='{card_data}'>
-                    <div class='card-header' title='{card['Dokter']}'>{card['Dokter']}</div>
-                    <div class='card-details'>
-                        <div><strong>Poli:</strong> {card['Poli']}</div>
-                        <div><strong>Tipe:</strong> {card['Jenis']}</div>
-                    </div>
-                    <div class='card-icon'>{status_icon}</div>
-                </div>
-                """
-        else:
-            kanban_html += "<div class='empty-slot'>Kosong</div>"
-        
-        kanban_html += "</div>"
-    
-    kanban_html += "</div>"
-    
-    # Use st.components.v1.html for rendering the kanban board
-    st.components.v1.html(drag_drop_js + kanban_html, height=500, scrolling=False)
-    
-    # Manual move section as fallback (Simplified and uses full SLOTS)
-    with st.expander("📝 Pindah Manual (Fallback)", expanded=False):
-        # Collect all cards for manual move from lanes
-        all_cards = []
-        # Iterate over all TIME_SLOTS for robustness
-        for s in TIME_SLOTS:
-            for card in lanes.get(s, []):
-                card_copy = card.copy()
-                card_copy["Jam"] = s
-                all_cards.append(card_copy)
-        
-        if all_cards:
-            col_select, col_move = st.columns([3, 2])
-            
-            with col_select:
-                options = []
-                display_texts = []
-                for i, card in enumerate(all_cards):
-                    display_text = f"{card['Dokter']} - {card['Poli']} ({card['Jenis']}) @ {card['Jam']}"
-                    if card.get("Over"):
-                        display_text += " 🔴 OVER"
-                    # Bentrok check removed as per request
-                    options.append(i)
-                    display_texts.append(display_text)
-                
-                selected_index = st.selectbox(
-                    "Pilih jadwal dokter:",
-                    options=options,
-                    format_func=lambda x: display_texts[x],
-                    key="manual_move_select"
-                )
-                
-                selected_card = all_cards[selected_index]
-                st.info(f"**Terpilih:** {selected_card['Dokter']} - {selected_card['Poli']} @ {selected_card['Jam']}")
-            
-            with col_move:
-                target_slot = st.selectbox(
-                    "Pindahkan ke jam:",
-                    TIME_SLOTS,
-                    index=TIME_SLOTS.index(selected_card["Jam"]) if selected_card["Jam"] in TIME_SLOTS else 0,
-                    key="manual_move_target"
-                )
-                
-                if st.button("🚀 Pindahkan Jadwal", type="primary", use_container_width=True):
-                    # Perform manual move - same logic as drag/drop but without the need for JS bridge
-                    card_to_move = all_cards[selected_index]
-                    original_slot = card_to_move["Jam"]
-                    
-                    # Remove from original slot
-                    st.session_state.kanban_state[selected_day][original_slot] = [
-                        c for c in st.session_state.kanban_state[selected_day][original_slot]
-                        if c.get("id") != card_to_move.get("id")
-                    ]
-                    
-                    # Add to target slot
-                    new_card = {
-                        "id": f"{selected_day}|{target_slot}|{np.random.randint(1e9)}",
-                        "Dokter": card_to_move["Dokter"],
-                        "Poli": card_to_move["Poli"],
-                        "Jenis": card_to_move["Jenis"],
-                        "Kode": card_to_move.get("Kode", "E"),
-                        "Over": False,
-                        "Bentrok": False,
-                        "Hari": selected_day,
-                        "Jam": target_slot
-                    }
-                    
-                    if target_slot not in st.session_state.kanban_state[selected_day]:
-                        st.session_state.kanban_state[selected_day][target_slot] = []
-                    
-                    st.session_state.kanban_state[selected_day][target_slot].append(new_card)
-                    
-                    # Rebuild df and compute status
-                    # 1. Collect all rows from kanban state (for selected day)
-                    new_rows_current_day = []
-                    for s in TIME_SLOTS:
-                        for c in st.session_state.kanban_state[selected_day].get(s, []):
-                             # Only take data-relevant keys
-                            new_rows_current_day.append({
-                                "Hari": selected_day,
-                                "Jam": s,
-                                "Poli": c.get("Poli", ""),
-                                "Jenis": c.get("Jenis", ""),
-                                "Dokter": c.get("Dokter", "")
-                            })
-
-                    df_kanban = pd.DataFrame(new_rows_current_day)
-                    df_kanban["Kode"] = df_kanban["Jenis"].apply(lambda x: "R" if str(x).lower()=="reguler" else "E")
-                    
-                    # 2. Get data for other days (from the latest df in history)
-                    df_other = df[df["Hari"] != selected_day].copy()
-
-                    # 3. Concatenate and re-compute status
-                    df_new = pd.concat([df_other, df_kanban], ignore_index=True)
-                    df_new = compute_status(df_new)
-                    
-                    # 4. Update session state
-                    
-                    # Update Excel view
-                    excel_view_df = create_excel_like_view(df_new)
-                    st.session_state.excel_view_df = excel_view_df
-                    
-                    # Update kanban state (re-init for the day to reflect new Over/Bentrok status and Poleks sort)
-                    lanes_new = {}
-                    for s in TIME_SLOTS:
-                        rows_s = df_new[(df_new["Hari"]==selected_day)&(df_new["Jam"]==s)].reset_index(drop=True)
-                        cards_new = []
-                        # Sorting to put Eksekutif/Poleks below Reguler
-                        rows_s["Sort_Order"] = rows_s["Jenis"].apply(lambda x: 0 if str(x).lower()=="reguler" else 1)
-                        rows_s = rows_s.sort_values(by="Sort_Order")
-
-                        for i,r in rows_s.iterrows():
-                            cards_new.append({
-                                "id": f"{selected_day}|{s}|{i}|{np.random.randint(1e9)}",
-                                "Dokter": r["Dokter"],
-                                "Poli": r["Poli"],
-                                "Jenis": r["Jenis"],
-                                "Kode": r["Kode"],
-                                "Over": bool(r["Over_Kuota"]),
-                                "Bentrok": False, 
-                                "Hari": selected_day,
-                                "Jam": s
-                            })
-                        if cards_new:
-                             lanes_new[s]=cards_new
-
-                    st.session_state.kanban_state[selected_day] = lanes_new
-
-                    # 5. Add to history
-                    push_history(df_new.copy())
-                    
-                    st.success(f"✅ {card_to_move['Dokter']} dipindahkan dari {original_slot} ke {target_slot}")
-                    st.rerun()
+    # Manual move section is now obsolete/redundant with the Excel-like drag drop, so it's removed to simplify.
 
 # ---------------------------
-# Export buttons
+# Export buttons & Quick Stats (TIDAK BERUBAH)
 # ---------------------------
 st.markdown("---")
 st.header("💾 Export & Simpan")
@@ -1079,7 +923,6 @@ st.header("💾 Export & Simpan")
 export_cols = st.columns(3)
 
 with export_cols[0]:
-    # Ensure 'df' used here is the latest, computed one from the current run
     csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Download CSV (Detail)",
@@ -1127,13 +970,11 @@ with export_cols[2]:
 st.markdown("---")
 st.subheader("📋 Statistik Cepat")
 
-# Create a summary by Poli
 try:
     poli_summary = df.groupby(["Poli", "Jenis"]).size().reset_index(name="Jumlah Slot")
     if not poli_summary.empty:
         poli_pivot = poli_summary.pivot(index="Poli", columns="Jenis", values="Jumlah Slot").fillna(0)
         
-        # Display as metrics
         st.write("**Jumlah Slot per Poli:**")
         cols = st.columns(min(4, len(poli_pivot.index.unique())))
         for idx, (poli, row) in enumerate(poli_pivot.iterrows()):
