@@ -3,5 +3,5 @@ pandas
 numpy
 openpyxl
 plotly
-# Optional but recommended for drag & drop Kanban
+# Optional: drag & drop kanban (jika tersedia di environment)
 streamlit-sortables
