@@ -8,7 +8,6 @@ import io
 import re
 import json
 from typing import Dict, List, Optional
-import uuid
 
 # Konfigurasi halaman
 st.set_page_config(
@@ -42,7 +41,7 @@ TIME_SLOTS_STR = [t.strftime("%H:%M") for t in TIME_SLOTS]
 HARI_ORDER = {"Senin": 1, "Selasa": 2, "Rabu": 3, "Kamis": 4, "Jum'at": 5}
 HARI_INDONESIA = ["Senin", "Selasa", "Rabu", "Kamis", "Jum'at"]
 
-# Inisialisasi session state untuk Kanban
+# Inisialisasi session state
 if 'kanban_tasks' not in st.session_state:
     st.session_state.kanban_tasks = {
         "todo": [],
@@ -54,34 +53,11 @@ if 'kanban_tasks' not in st.session_state:
 if 'kanban_next_id' not in st.session_state:
     st.session_state.kanban_next_id = 1
 
-class KanbanTask:
-    def __init__(self, id, title, description="", priority="medium", 
-                 due_date=None, assignee="", tags=None, created_by="", 
-                 created_date=None):
-        self.id = id
-        self.title = title
-        self.description = description
-        self.priority = priority  # low, medium, high
-        self.due_date = due_date
-        self.assignee = assignee
-        self.tags = tags or []
-        self.created_by = created_by
-        self.created_date = created_date or datetime.now()
-        self.last_updated = datetime.now()
-    
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "title": self.title,
-            "description": self.description,
-            "priority": self.priority,
-            "due_date": self.due_date.strftime("%Y-%m-%d") if self.due_date else None,
-            "assignee": self.assignee,
-            "tags": self.tags,
-            "created_by": self.created_by,
-            "created_date": self.created_date.strftime("%Y-%m-%d %H:%M"),
-            "last_updated": self.last_updated.strftime("%Y-%m-%d %H:%M")
-        }
+if 'processed_result' not in st.session_state:
+    st.session_state.processed_result = None
+
+if 'processed_filename' not in st.session_state:
+    st.session_state.processed_filename = ""
 
 def parse_time_range(time_str):
     """Parse rentang waktu dari string seperti '08.00 - 10.30'"""
@@ -486,6 +462,86 @@ def import_kanban_from_excel(file):
     except:
         return False
 
+# ==================== PROCESS FILE FUNCTION ====================
+
+def process_file(uploaded_file):
+    """Proses file Excel dan kembalikan buffer"""
+    try:
+        # Baca file
+        wb = load_workbook(uploaded_file)
+        
+        # Cek sheet yang diperlukan
+        required_sheets = ['Reguler', 'Poleks', 'Jadwal']
+        missing_sheets = [s for s in required_sheets if s not in wb.sheetnames]
+        
+        if missing_sheets:
+            raise ValueError(f"Sheet berikut tidak ditemukan: {', '.join(missing_sheets)}")
+        
+        # Baca data
+        df_reguler = pd.read_excel(uploaded_file, sheet_name='Reguler')
+        df_poleks = pd.read_excel(uploaded_file, sheet_name='Poleks')
+        
+        # Proses jadwal
+        df_reguler_processed = process_schedule(df_reguler, 'Reguler')
+        df_poleks_processed = process_schedule(df_poleks, 'Poleks')
+        
+        # Gabungkan hasil
+        df_jadwal = pd.concat([df_reguler_processed, df_poleks_processed], ignore_index=True)
+        
+        # Urutkan
+        df_jadwal['HARI_ORDER'] = df_jadwal['HARI'].map(HARI_ORDER)
+        df_jadwal = df_jadwal.sort_values(['POLI ASAL', 'HARI_ORDER', 'DOKTER', 'JENIS POLI'])
+        df_jadwal = df_jadwal.drop('HARI_ORDER', axis=1)
+        
+        # Reset index
+        df_jadwal = df_jadwal.reset_index(drop=True)
+        
+        # Simpan ke session state untuk preview
+        st.session_state.processed_data = df_jadwal
+        
+        # Buat workbook baru
+        new_wb = load_workbook(uploaded_file)
+        
+        # Hapus sheet Jadwal yang lama jika ada
+        if 'Jadwal' in new_wb.sheetnames:
+            std = new_wb['Jadwal']
+            new_wb.remove(std)
+        
+        # Buat sheet Jadwal baru
+        ws_jadwal = new_wb.create_sheet('Jadwal')
+        
+        # Tulis header
+        headers = ['POLI ASAL', 'JENIS POLI', 'HARI', 'DOKTER'] + TIME_SLOTS_STR
+        for col_idx, header in enumerate(headers, start=1):
+            ws_jadwal.cell(row=1, column=col_idx, value=header)
+        
+        # Tulis data
+        for row_idx, row_data in enumerate(df_jadwal.to_dict('records'), start=2):
+            ws_jadwal.cell(row=row_idx, column=1, value=row_data['POLI ASAL'])
+            ws_jadwal.cell(row=row_idx, column=2, value=row_data['JENIS POLI'])
+            ws_jadwal.cell(row=row_idx, column=3, value=row_data['HARI'])
+            ws_jadwal.cell(row=row_idx, column=4, value=row_data['DOKTER'])
+            
+            for col_idx, slot in enumerate(TIME_SLOTS_STR, start=5):
+                ws_jadwal.cell(row=row_idx, column=col_idx, value=row_data.get(slot, ''))
+        
+        # Terapkan styling
+        apply_styles(ws_jadwal, len(df_jadwal) + 1)
+        
+        # Simpan ke buffer
+        result_buffer = io.BytesIO()
+        new_wb.save(result_buffer)
+        result_buffer.seek(0)
+        
+        # Simpan ke session state
+        st.session_state.processed_result = result_buffer
+        st.session_state.processed_filename = uploaded_file.name
+        
+        return result_buffer
+        
+    except Exception as e:
+        raise Exception(f"Error dalam memproses file: {str(e)}")
+
 # ==================== MAIN APP ====================
 
 def main():
@@ -512,10 +568,6 @@ def main():
             4. **Track** di Kanban
             """)
             
-            if st.button("📥 Download Template", use_container_width=True):
-                # Function untuk template (sama seperti sebelumnya)
-                pass
-                
         elif page == "📋 Kanban Board":
             st.subheader("Kanban Actions")
             
@@ -536,7 +588,8 @@ def main():
                 kanban_file = st.file_uploader(
                     "Import Kanban",
                     type=['xlsx'],
-                    key="kanban_import"
+                    key="kanban_import",
+                    label_visibility="collapsed"
                 )
                 if kanban_file:
                     if import_kanban_from_excel(kanban_file):
@@ -571,7 +624,8 @@ def render_upload_page():
     uploaded_file = st.file_uploader(
         "Upload file Excel (.xlsx)", 
         type=['xlsx'],
-        help="Upload file dengan format yang sesuai"
+        help="Upload file dengan format yang sesuai",
+        key="file_uploader"
     )
     
     if uploaded_file:
@@ -584,21 +638,112 @@ def render_upload_page():
         with st.expander("📄 Preview File", expanded=False):
             sheet_names = pd.ExcelFile(uploaded_file).sheet_names
             st.write(f"**Sheets:** {', '.join(sheet_names)}")
-        
-        # Proses button
-        if st.button("🚀 Proses Jadwal & Buat Task Kanban", type="primary", use_container_width=True):
-            with st.spinner("Memproses..."):
+            
+            selected_sheet = st.selectbox("Pilih sheet untuk preview:", sheet_names)
+            if selected_sheet:
                 try:
-                    # Proses file (implementasi sebelumnya)
-                    # ...
+                    df_preview = pd.read_excel(uploaded_file, sheet_name=selected_sheet, nrows=5)
+                    st.dataframe(df_preview, use_container_width=True)
+                except:
+                    st.warning(f"Tidak dapat membaca sheet {selected_sheet}")
+        
+        # Proses button - TOMBOL UTAMA
+        if st.button("🚀 Proses Jadwal & Buat Task Kanban", type="primary", use_container_width=True):
+            with st.spinner("Memproses file..."):
+                try:
+                    # Proses file
+                    result_buffer = process_file(uploaded_file)
                     
                     # Auto-create Kanban task untuk tracking
                     auto_create_kanban_task(uploaded_file.name)
                     
-                    st.success("✅ File diproses dan task Kanban dibuat!")
+                    st.success("✅ File berhasil diproses dan task Kanban dibuat!")
                     
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
+        
+        # Tampilkan tombol download jika sudah ada hasil yang diproses
+        if st.session_state.processed_result is not None:
+            st.markdown("---")
+            st.subheader("📥 Download Hasil")
+            
+            col_dl1, col_dl2, col_dl3 = st.columns([1, 2, 1])
+            with col_dl2:
+                # Tombol download untuk hasil jadwal
+                st.download_button(
+                    label=f"📥 Download Hasil Jadwal",
+                    data=st.session_state.processed_result,
+                    file_name=f"jadwal_hasil_{st.session_state.processed_filename}",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="download_jadwal"
+                )
+            
+            # Tampilkan preview data yang diproses
+            with st.expander("👁️ Preview Data yang Diproses", expanded=False):
+                if st.session_state.processed_data is not None:
+                    st.dataframe(st.session_state.processed_data.head(20), use_container_width=True)
+                    
+                    # Statistik
+                    col_stat1, col_stat2, col_stat3 = st.columns(3)
+                    with col_stat1:
+                        total_rows = len(st.session_state.processed_data)
+                        st.metric("Total Baris", total_rows)
+                    with col_stat2:
+                        total_r = (st.session_state.processed_data[TIME_SLOTS_STR] == 'R').sum().sum()
+                        st.metric("Slot Reguler", total_r)
+                    with col_stat3:
+                        total_e = (st.session_state.processed_data[TIME_SLOTS_STR] == 'E').sum().sum()
+                        st.metric("Slot Poleks", total_e)
+            
+            # Tombol untuk reset/clear hasil
+            if st.button("🗑️ Clear Hasil", type="secondary", use_container_width=True):
+                st.session_state.processed_result = None
+                st.session_state.processed_data = None
+                st.session_state.processed_filename = ""
+                st.rerun()
+    
+    else:
+        # Tampilkan info jika belum upload file
+        st.info("👆 Silakan upload file Excel untuk memulai")
+        
+        # Template download
+        with st.expander("📥 Download Template File", expanded=False):
+            st.markdown("Download template untuk format yang benar:")
+            
+            # Buat template sederhana
+            if st.button("Buat Template Excel"):
+                wb = openpyxl.Workbook()
+                
+                # Sheet Poli Asal
+                ws1 = wb.active
+                ws1.title = "Poli Asal"
+                ws1.append(["No", "Nama Poli", "kode sheet"])
+                
+                # Sheet Reguler
+                ws2 = wb.create_sheet("Reguler")
+                ws2.append(["Nama Dokter", "Poli Asal", "Jenis Poli", "Senin", "Selasa", "Rabu", "Kamis", "Jum'at"])
+                ws2.append(["dr. Contoh Dokter, Sp.A", "Poli Anak", "Reguler", "08.00 - 10.30", "", "", "", ""])
+                
+                # Sheet Poleks
+                ws3 = wb.create_sheet("Poleks")
+                ws3.append(["Nama Dokter", "Poli Asal", "Jenis Poli", "Senin", "Selasa", "Rabu", "Kamis", "Jum'at"])
+                ws3.append(["dr. Contoh Dokter, Sp.A", "Poli Anak", "Poleks", "07.30 - 08.25", "", "", "", ""])
+                
+                # Sheet Jadwal
+                ws4 = wb.create_sheet("Jadwal")
+                ws4.append(["POLI ASAL", "JENIS POLI", "HARI", "DOKTER"] + TIME_SLOTS_STR)
+                
+                buffer = io.BytesIO()
+                wb.save(buffer)
+                buffer.seek(0)
+                
+                st.download_button(
+                    label="Download Template.xlsx",
+                    data=buffer,
+                    file_name="template_jadwal_poli.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
 def auto_create_kanban_task(filename):
     """Otomatis buat task Kanban setelah proses"""
@@ -636,52 +781,127 @@ def render_analytics_page():
         progress = (done_tasks / total_tasks * 100) if total_tasks > 0 else 0
         st.metric("Completion", f"{progress:.1f}%")
     with col4:
-        # Calculate average time in each column (simplified)
         st.metric("Active Tasks", len(st.session_state.kanban_tasks["in_progress"]))
     
-    # Burndown chart (simplified)
+    # Task distribution
     st.subheader("Task Distribution")
-    import plotly.graph_objects as go
     
-    fig = go.Figure(data=[
-        go.Bar(
-            x=list(st.session_state.kanban_tasks.keys()),
-            y=[len(tasks) for tasks in st.session_state.kanban_tasks.values()],
-            marker_color=list(KANBAN_COLORS.values())
-        )
-    ])
+    # Simple bar chart dengan HTML/CSS
+    column_names = ["Todo", "In Progress", "Review", "Done"]
+    column_keys = ["todo", "in_progress", "review", "done"]
+    task_counts = [len(st.session_state.kanban_tasks[key]) for key in column_keys]
     
-    fig.update_layout(
-        title="Tasks per Column",
-        xaxis_title="Column",
-        yaxis_title="Number of Tasks"
-    )
+    # Buat chart sederhana
+    chart_html = """
+    <div style="margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 10px;">
+    """
     
-    st.plotly_chart(fig, use_container_width=True)
+    max_count = max(task_counts) if task_counts else 1
+    
+    for name, count, color in zip(column_names, task_counts, KANBAN_COLORS.values()):
+        width = (count / max_count * 100) if max_count > 0 else 0
+        chart_html += f"""
+        <div style="margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span><strong>{name}</strong></span>
+                <span>{count} tasks</span>
+            </div>
+            <div style="width: 100%; background-color: #e0e0e0; border-radius: 5px; height: 25px;">
+                <div style="width: {width}%; background-color: {color}; height: 25px; border-radius: 5px; 
+                         transition: width 0.5s;"></div>
+            </div>
+        </div>
+        """
+    
+    chart_html += "</div>"
+    st.markdown(chart_html, unsafe_allow_html=True)
+    
+    # Recent activity
+    st.subheader("Recent Activity")
+    
+    # Kumpulkan semua task dan urutkan berdasarkan last_updated
+    all_tasks = []
+    for column, tasks in st.session_state.kanban_tasks.items():
+        for task in tasks:
+            task['column'] = column
+            all_tasks.append(task)
+    
+    # Sort by last_updated (newest first)
+    all_tasks_sorted = sorted(
+        all_tasks, 
+        key=lambda x: x.get('last_updated', ''), 
+        reverse=True
+    )[:10]  # Ambil 10 terbaru
+    
+    for task in all_tasks_sorted:
+        with st.container():
+            st.markdown(f"""
+            <div style="padding: 10px; margin-bottom: 10px; border-left: 4px solid {KANBAN_COLORS[task['column']]}; 
+                     background-color: white; border-radius: 5px;">
+                <strong>#{task['id']} - {task['title']}</strong><br>
+                <small>Status: {task['column'].replace('_', ' ').title()} • 
+                Updated: {task.get('last_updated', 'N/A')}</small>
+            </div>
+            """, unsafe_allow_html=True)
 
 def render_settings_page():
     """Halaman settings"""
     st.title("⚙️ Settings")
     
     # Kanban settings
-    with st.expander("Kanban Settings"):
-        st.checkbox("Auto-create task setelah proses file", value=True)
-        st.checkbox("Notify when task moves to Done", value=True)
-        st.checkbox("Enable task deadlines", value=True)
+    with st.expander("Kanban Settings", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            auto_create = st.checkbox("Auto-create task setelah proses file", value=True)
+            notify_done = st.checkbox("Notify when task moves to Done", value=True)
+        with col2:
+            enable_deadlines = st.checkbox("Enable task deadlines", value=True)
+            show_tags = st.checkbox("Show tags on task cards", value=True)
     
     # Schedule settings
     with st.expander("Schedule Settings"):
-        start_time = st.time_input("Start time", value=time(7, 30))
-        end_time = st.time_input("End time", value=time(14, 30))
-        interval = st.selectbox("Time interval", [15, 30, 60], index=1)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            start_time = st.time_input("Start time", value=time(7, 30))
+        with col2:
+            end_time = st.time_input("End time", value=time(14, 30))
+        with col3:
+            interval = st.selectbox("Time interval (minutes)", [15, 30, 60], index=1)
     
-    # Export all settings
-    if st.button("Export All Settings", use_container_width=True):
+    # Data management
+    with st.expander("Data Management", expanded=False):
+        st.warning("⚠️ Hati-hati dengan operasi ini!")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Reset Kanban Board", use_container_width=True):
+                st.session_state.kanban_tasks = {
+                    "todo": [], "in_progress": [], "review": [], "done": []
+                }
+                st.session_state.kanban_next_id = 1
+                st.success("Kanban board telah direset!")
+                st.rerun()
+        
+        with col2:
+            if st.button("🗑️ Clear All Data", use_container_width=True):
+                st.session_state.kanban_tasks = {
+                    "todo": [], "in_progress": [], "review": [], "done": []
+                }
+                st.session_state.kanban_next_id = 1
+                st.session_state.processed_result = None
+                st.session_state.processed_data = None
+                st.session_state.processed_filename = ""
+                st.success("Semua data telah dihapus!")
+                st.rerun()
+    
+    # Export settings
+    if st.button("💾 Export All Settings", use_container_width=True):
         settings = {
             "kanban_settings": {
                 "auto_create": True,
-                "notify": True,
-                "deadlines": True
+                "notify_done": True,
+                "enable_deadlines": True,
+                "show_tags": True
             },
             "schedule_settings": {
                 "start_time": start_time.strftime("%H:%M"),
