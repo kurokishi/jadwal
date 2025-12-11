@@ -22,7 +22,7 @@ FILL_OVERLIMIT = PatternFill(start_color="FF0000", end_color="FF0000", fill_type
 
 # Konfigurasi default
 TIME_SLOTS = [
-    time(7, 30), time(8, 0), time(8, 30), time(9, 0), time(9, 30),
+    time(7,0), time(7, 30), time(8, 0), time(8, 30), time(9, 0), time(9, 30),
     time(10, 0), time(10, 30), time(11, 0), time(11, 30), time(12, 0),
     time(12, 30), time(13, 0), time(13, 30), time(14, 0), time(14, 30)
 ]
