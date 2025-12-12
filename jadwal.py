@@ -1,10 +1,16 @@
 import streamlit as st
 
-# Import modul inti aplikasi
 from app.core.scheduler import Scheduler
 from app.core.excel_writer import ExcelWriter
-from app.core.analyzer import Analyzer
+from app.core.analyzer import ErrorAnalyzer
+from app.core.cleaner import DataCleaner
+from app.config import Config
+
+from app.ui.sidebar import render_sidebar
 from app.ui.tab_upload import render_upload_tab
+from app.ui.tab_analyzer import render_analyzer_tab
+from app.ui.tab_visualization import render_visualization_tab
+from app.ui.tab_settings import render_settings_tab
 from app.ui.tab_kanban_drag import render_drag_kanban
 
 
