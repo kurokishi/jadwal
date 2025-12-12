@@ -5,3 +5,4 @@ matplotlib
 numpy
 python-dateutil
 tzdata
+plotly
