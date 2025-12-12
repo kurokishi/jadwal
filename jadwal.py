@@ -73,56 +73,25 @@ try:
     )
     
     # Test TimeParser
-    slots = time_parser.generate_slot_strings()
-    print(f"🕐 Generated {len(slots)} time slots: {slots[:3]}...")
+    time_parser = TimeParser(
+        start_hour=config.start_hour,
+        start_minute=config.start_minute,
+        interval_minutes=config.interval_minutes
+    )
     
     cleaner = DataCleaner()
-    print("✅ DataCleaner initialized")
-    
     analyzer = ErrorAnalyzer()
-    print("✅ ErrorAnalyzer initialized")
-    
-    scheduler = Scheduler(
-        parser=time_parser,
-        cleaner=cleaner,
-        config=config
-    )
-    print("✅ Scheduler initialized")
-    
+    scheduler = Scheduler(parser=time_parser, cleaner=cleaner, config=config)
     writer = ExcelWriter(config=config)
-    print("✅ ExcelWriter initialized")
+    validator = Validator()  # Initialize validator
     
-    validator = Validator()
-    print("✅ Validator initialized")
+    print("✅ All core objects initialized")
     
 except Exception as e:
-    print(f"❌ Error initializing: {e}")
+    print(f"❌ Error initializing core objects: {e}")
     st.error(f"Error initializing application: {e}")
     st.code(traceback.format_exc())
     st.stop()
-
-# ============================================================
-# PAGE SETUP
-# ============================================================
-
-st.set_page_config(
-    page_title="Jadwal Dokter",
-    layout="wide",
-    page_icon="🗓️"
-)
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-render_sidebar(config)
-
-# ============================================================
-# MAIN CONTENT
-# ============================================================
-
-st.title("🗓️ Sistem Jadwal Dokter")
-st.caption("Aplikasi untuk mengelola jadwal dokter reguler dan poleks")
 
 # ============================================================
 # TAB SYSTEM
@@ -137,7 +106,8 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 with tab1:
-    render_upload_tab(scheduler, writer, analyzer, config)
+    # PASS VALIDATOR ke render_upload_tab
+    render_upload_tab(scheduler, writer, analyzer, validator, config)
 
 with tab2:
     render_analyzer_tab(analyzer, config)
@@ -150,5 +120,3 @@ with tab4:
 
 with tab5:
     render_drag_kanban()
-
-print("✅ App running successfully")
