@@ -3,11 +3,7 @@ pandas
 openpyxl
 matplotlib
 streamlit-sortable
-
-# opsional tapi direkomendasikan
 numpy
 python-dateutil
 pytz
-
-# jika ingin Excel writer lebih kompatibel
 xlsxwriter
