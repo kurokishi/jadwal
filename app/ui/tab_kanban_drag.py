@@ -7,47 +7,64 @@ KANBAN_FILE = "kanban.json"
 
 DEFAULT_KANBAN = {
     "BACKLOG": [
-        "Heatmap aktivitas dokter",
-        "Heatmap beban poli",
-        "Dropdown otomatis di template",
-        "Validasi real-time upload",
-        "Integrasi master data dokter",
-        "Timeline view dokter"
+        {"text": "Heatmap aktivitas dokter", "label": "Feature"},
+        {"text": "Heatmap beban poli", "label": "Feature"},
+        {"text": "Dropdown otomatis di template", "label": "Improvement"},
+        {"text": "Validasi real-time upload", "label": "Improvement"},
+        {"text": "Integrasi master data dokter", "label": "Improvement"},
+        {"text": "Timeline view dokter", "label": "Feature"},
     ],
     "READY": [
-        "Optimasi performa Excel Writer",
-        "Toggle merge shift dokter",
-        "Watermark Excel",
-        "Analisis trend jam poli per hari"
+        {"text": "Optimasi performa Excel Writer", "label": "Improvement"},
+        {"text": "Toggle merge shift dokter", "label": "Feature"},
+        {"text": "Watermark Excel", "label": "Feature"},
+        {"text": "Analisis trend jam poli per hari", "label": "Feature"},
     ],
     "IN PROGRESS": [
-        "Stabilitas merge shift dokter",
-        "Penyempurnaan Peta Konflik Visual",
-        "Sinkronisasi slot generator → writer → analyzer"
+        {"text": "Stabilitas merge shift dokter", "label": "Improvement"},
+        {"text": "Penyempurnaan Peta Konflik Visual", "label": "Improvement"},
+        {"text": "Sinkronisasi slot generator → writer → analyzer", "label": "Bug"},
     ],
     "TESTING": [
-        "Akurasi rekap layanan",
-        "Logika overload Poleks",
-        "Grafik beban poli kompatibilitas Excel"
+        {"text": "Akurasi rekap layanan", "label": "Bug"},
+        {"text": "Logika overload Poleks", "label": "Bug"},
+        {"text": "Grafik beban poli kompatibilitas Excel", "label": "Improvement"},
     ],
     "DONE": [
-        "Download Template Excel",
-        "Peta Konflik Visual (Matrix)",
-        "Peak Hour Analysis",
-        "Penggabungan shift dokter otomatis",
-        "Rekap Layanan",
-        "Rekap Poli",
-        "Rekap Dokter",
-        "Tanpa border antar hari"
+        {"text": "Download Template Excel", "label": "Feature"},
+        {"text": "Peta Konflik Visual (Matrix)", "label": "Feature"},
+        {"text": "Peak Hour Analysis", "label": "Feature"},
+        {"text": "Penggabungan shift dokter otomatis", "label": "Improvement"},
+        {"text": "Rekap Layanan", "label": "Feature"},
+        {"text": "Rekap Poli", "label": "Feature"},
+        {"text": "Rekap Dokter", "label": "Feature"},
+        {"text": "Tanpa border antar hari", "label": "Improvement"}
     ]
 }
+
+
+# ---------------- UTILS -----------------
+
+def normalize_kanban(data):
+    """Convert old string list to object list automatically."""
+    new_data = {}
+    for col, items in data.items():
+        new_col = []
+        for item in items:
+            if isinstance(item, str):
+                new_col.append({"text": item, "label": "Feature"})
+            else:
+                new_col.append(item)
+        new_data[col] = new_col
+    return new_data
 
 
 def load_kanban():
     if os.path.exists(KANBAN_FILE):
         try:
             with open(KANBAN_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                return normalize_kanban(data)
         except:
             return DEFAULT_KANBAN
     return DEFAULT_KANBAN
@@ -58,12 +75,22 @@ def save_kanban(data):
         json.dump(data, f, indent=4)
 
 
+def get_label_color(label):
+    return {
+        "Bug": "#ff4d4f",          # red
+        "Feature": "#2f80ed",      # blue
+        "Improvement": "#27ae60"   # green
+    }.get(label, "#555")
+
+
+# ---------------- MAIN UI -----------------
+
 def render_drag_kanban():
 
-    st.title("📌 Kanban Developer — Drag & Drop")
-    st.caption("Pindahkan kartu antar kolom seperti Trello")
+    st.title("📌 Kanban Developer — Drag & Drop + Label Warna")
+    st.caption("Kategori: 🔴 Bug | 🟦 Feature | 🟩 Improvement")
 
-    # Load only once
+    # Load Kanban
     if "kanban_data" not in st.session_state:
         st.session_state.kanban_data = load_kanban()
 
@@ -71,60 +98,87 @@ def render_drag_kanban():
 
     st.markdown("---")
 
-    # Form tambah card baru
-    with st.expander("➕ Tambah Item ke Kanban"):
-        colA, colB = st.columns([3, 1])
+    # ========== FORM TAMBAH ITEM ==========
+    with st.expander("➕ Tambah Item Baru"):
+        colA, colB, colC = st.columns([3, 2, 2])
+
         with colA:
-            new_item = st.text_input("Nama item baru:")
+            new_item = st.text_input("Nama item:")
+
         with colB:
+            new_label = st.selectbox("Label:", ["Bug", "Feature", "Improvement"])
+
+        with colC:
             target_column = st.selectbox("Tambahkan ke kolom:", list(kanban.keys()))
 
         if st.button("Tambah"):
             if new_item.strip():
-                kanban[target_column].append(new_item.strip())
+                kanban[target_column].append({
+                    "text": new_item.strip(),
+                    "label": new_label
+                })
                 save_kanban(kanban)
                 st.success("Item berhasil ditambahkan!")
                 st.experimental_rerun()
 
     st.markdown("---")
 
-    # RENDER 5 KOLOM KANBAN
+    # ========== RENDER 5 KOLOM ==========
     col1, col2, col3, col4, col5 = st.columns(5)
     cols = [col1, col2, col3, col4, col5]
     titles = list(kanban.keys())
 
-    updated = {}
+    updated_state = {}
 
     for col, title in zip(cols, titles):
         with col:
             st.subheader(title)
 
-            cards = kanban[title]
+            # Render item text with color
+            display_items = [
+                f"""<div style="
+                    padding:8px;
+                    border-radius:6px;
+                    background-color:{get_label_color(item['label'])};
+                    color:white;
+                    margin-bottom:6px;
+                    font-size:12px;
+                    ">
+                    <b>{item['label']}</b><br>{item['text']}
+                </div>"""
+                for item in kanban[title]
+            ]
 
-            new_cards = sortable(
-                cards,
+            sorted_items = sortable(
+                display_items,
                 key=title,
                 style={
-                    "backgroundColor": "#F0F2F6",
+                    "backgroundColor": "#f0f2f6",
                     "padding": "10px",
                     "borderRadius": "10px",
                     "minHeight": "260px"
                 },
                 itemStyle={
-                    "padding": "12px",
-                    "margin": "8px",
-                    "backgroundColor": "#FFFFFF",
-                    "borderRadius": "8px",
-                    "boxShadow": "1px 1px 5px rgba(0,0,0,0.3)"
+                    "padding": "0",
+                    "margin": "0",
+                    "backgroundColor": "transparent"
                 }
             )
 
-            updated[title] = new_cards
+            # Map sorted HTML back to original objects
+            new_objects = []
+            for html in sorted_items:
+                for original in kanban[title]:
+                    if original["text"] in html:
+                        new_objects.append(original)
+                        break
 
-    # UPDATE STATE
-    st.session_state.kanban_data = updated
+            updated_state[title] = new_objects
+
+    # Update Kanban
+    st.session_state.kanban_data = updated_state
 
     # SAVE BUTTON
     if st.button("💾 Simpan Kanban"):
-        save_kanban(updated)
-        st.success("Kanban berhasil disimpan ke kanban.json!")
+        save_kanban(updated_state)
+        st.success("Kanban berhasil disimpan!")
