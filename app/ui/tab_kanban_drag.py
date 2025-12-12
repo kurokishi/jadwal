@@ -1,20 +1,17 @@
 # app/ui/tab_kanban_drag.py
+
 import streamlit as st
 import json
-import os
-from pathlib import Path
-
-KANBAN_FILE = "kanban.json"
 
 DEFAULT_KANBAN = {
     "BACKLOG": [
         {"text": "Heatmap aktivitas dokter", "label": "Feature"},
         {"text": "Heatmap beban poli", "label": "Feature"},
-        {"text": "Dropdown otomatis di template", "label": "Improvement"}
+        {"text": "Dropdown otomatis di template", "label": "Improvement"},
     ],
     "READY": [
         {"text": "Optimasi performa Excel Writer", "label": "Improvement"},
-        {"text": "Toggle merge shift dokter", "label": "Feature"}
+        {"text": "Toggle merge shift dokter", "label": "Feature"},
     ],
     "IN PROGRESS": [
         {"text": "Stabilitas merge shift dokter", "label": "Improvement"},
@@ -24,299 +21,201 @@ DEFAULT_KANBAN = {
     ],
     "DONE": [
         {"text": "Download Template Excel", "label": "Feature"},
-    ]
+    ],
 }
 
 
-def _ensure_kanban_file_exists():
-    if not Path(KANBAN_FILE).exists():
-        with open(KANBAN_FILE, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_KANBAN, f, indent=2, ensure_ascii=False)
-
-
-def load_server_kanban():
-    _ensure_kanban_file_exists()
-    try:
-        with open(KANBAN_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # normalize: if old items are strings, convert
-            for k, v in list(data.items()):
-                new_list = []
-                for item in v:
-                    if isinstance(item, str):
-                        new_list.append({"text": item, "label": "Feature"})
-                    elif isinstance(item, dict) and "text" in item:
-                        if "label" not in item:
-                            item["label"] = "Feature"
-                        new_list.append(item)
-                    else:
-                        # ignore invalid
-                        pass
-                data[k] = new_list
-            return data
-    except Exception as e:
-        st.error(f"Gagal load kanban.json: {e}")
-        return DEFAULT_KANBAN.copy()
+# ============================================================
+# SESSION STORAGE — bukan penyimpanan file
+# ============================================================
+def get_server_kanban():
+    if "kanban_data" not in st.session_state:
+        st.session_state["kanban_data"] = DEFAULT_KANBAN.copy()
+    return st.session_state["kanban_data"]
 
 
 def save_server_kanban(data):
-    try:
-        with open(KANBAN_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        return True, None
-    except Exception as e:
-        return False, str(e)
+    st.session_state["kanban_data"] = data
 
 
+# ============================================================
+# RENDER TAB KANBAN
+# ============================================================
 def render_drag_kanban():
-    st.title("📌 Kanban — Drag & Drop (HTML + JS)")
-    st.markdown(
-        "Drag & drop menggunakan SortableJS (CDN). Untuk menyimpan perubahan ke server: "
-        "1) klik `Export JSON` di area Kanban → 2) Upload file JSON di panel 'Server Controls' lalu klik 'Save to server'."
-    )
+    st.title("📌 Kanban — Drag & Drop (Tanpa File System)")
 
-    # load server kanban (server-side state)
-    server_data = load_server_kanban()
+    server_data = get_server_kanban()
 
-    # --- Left column: Server controls (Upload / add / download saved) ---
     left, right = st.columns([1, 3])
 
+    # ============================================================
+    # LEFT PANEL — server controls
+    # ============================================================
     with left:
         st.subheader("Server Controls")
 
-        # Upload JSON to update server kanban (user exported JSON from client)
-        uploaded = st.file_uploader("Upload Kanban JSON (to save server-side)", type=["json"])
-        if uploaded is not None:
+        # ============= Upload JSON ============
+        uploaded = st.file_uploader("Upload Kanban JSON", type=["json"])
+        if uploaded:
             try:
-                uploaded_data = json.load(uploaded)
-                # normalize uploaded_data
-                for k, v in list(uploaded_data.items()):
-                    new_list = []
-                    for item in v:
-                        if isinstance(item, str):
-                            new_list.append({"text": item, "label": "Feature"})
-                        elif isinstance(item, dict) and "text" in item:
+                loaded = json.load(uploaded)
+
+                # Normalisasi
+                for col, items in loaded.items():
+                    fixed = []
+                    for item in items:
+                        if isinstance(item, dict) and "text" in item:
                             if "label" not in item:
                                 item["label"] = "Feature"
-                            new_list.append(item)
-                    uploaded_data[k] = new_list
-                ok, err = save_server_kanban(uploaded_data)
-                if ok:
-                    st.success("Kanban JSON berhasil disimpan ke server (kanban.json).")
-                    st.experimental_rerun()
-                else:
-                    st.error(f"Gagal simpan: {err}")
+                            fixed.append(item)
+                        elif isinstance(item, str):
+                            fixed.append({"text": item, "label": "Feature"})
+                    loaded[col] = fixed
+
+                save_server_kanban(loaded)
+                st.success("Kanban JSON berhasil di-load ke server (session).")
+                st.experimental_rerun()
+
             except Exception as e:
-                st.error(f"File JSON tidak valid: {e}")
+                st.error(f"JSON tidak valid: {e}")
 
-        # Add new item via Streamlit form (server side)
+        # ============= Tambah card baru ============
+        st.markdown("---")
+        st.markdown("### ➕ Tambah Card")
         with st.form("add_card_form"):
-            st.markdown("**Tambah item server-side**")
-            col1, col2 = st.columns([3, 2])
-            with col1:
-                new_text = st.text_input("Judul item")
-            with col2:
-                new_label = st.selectbox("Label", ["Feature", "Improvement", "Bug"])
-            target_col = st.selectbox("Kolom tujuan", list(server_data.keys()))
-            submitted = st.form_submit_button("Tambah item ke server")
-            if submitted:
+            new_text = st.text_input("Judul")
+            new_label = st.selectbox("Label", ["Feature", "Improvement", "Bug"])
+            target = st.selectbox("Kolom", list(server_data.keys()))
+            add_btn = st.form_submit_button("Tambah")
+
+            if add_btn:
                 if new_text.strip():
-                    server_data[target_col].append({"text": new_text.strip(), "label": new_label})
-                    ok, err = save_server_kanban(server_data)
-                    if ok:
-                        st.success("Item ditambahkan & disimpan ke server.")
-                        st.experimental_rerun()
-                    else:
-                        st.error(f"Gagal simpan: {err}")
-                else:
-                    st.warning("Masukkan judul item terlebih dahulu.")
+                    server_data[target].append({"text": new_text, "label": new_label})
+                    save_server_kanban(server_data)
+                    st.success("Ditambahkan!")
+                    st.experimental_rerun()
 
-        # Download server-side kanban.json
+        # ============= Download server JSON ============
         st.markdown("---")
-        st.markdown("**Server kanban.json**")
-        try:
-            with open(KANBAN_FILE, "r", encoding="utf-8") as f:
-                data_text = f.read()
-            st.download_button("📥 Download server kanban.json", data=data_text, file_name="kanban.json", mime="application/json")
-        except Exception:
-            st.info("File server tidak tersedia.")
+        st.markdown("### 📥 Download Server JSON")
+        st.download_button(
+            "Download kanban.json",
+            data=json.dumps(server_data, indent=2, ensure_ascii=False),
+            file_name="kanban.json",
+            mime="application/json"
+        )
 
-        st.markdown("---")
-        st.caption("Catatan: drag/drop di area utama adalah client-side. Gunakan Export JSON lalu Upload untuk menyimpan state hasil drag/drop ke server.")
-
-    # --- Right column: embed HTML kanban (client-side drag & drop) ---
+    # ============================================================
+    # RIGHT PANEL — Kanban HTML Drag & Drop
+    # ============================================================
     with right:
-        st.subheader("Kanban Board (Client-side)")
+        st.subheader("Kanban Board (Client-side Drag & Drop)")
 
-        # Pass server_data into the HTML as JSON string
         initial_state = json.dumps(server_data, ensure_ascii=False)
 
-        # HTML + CSS + JS (SortableJS CDN). Provides:
-        # - drag & drop between columns
-        # - edit card text inline
-        # - export JSON (client download)
-        # - copy to clipboard
-        # - color labels
         html = f"""
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Kanban</title>
   <style>
-    body {{ font-family: Arial, Helvetica, sans-serif; }}
-    .board {{ display:flex; gap:12px; align-items:flex-start; }}
-    .column {{ background:#f4f6f8; padding:12px; border-radius:8px; width:260px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
-    .col-title {{ font-weight:700; margin-bottom:8px; }}
-    .card-list {{ min-height:120px; }}
-    .card {{ background:#fff; padding:8px; margin-bottom:8px; border-radius:6px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }}
-    .label {{ display:inline-block; padding:2px 6px; border-radius:6px; font-size:11px; color:white; margin-bottom:6px; }}
-    .label.Bug {{ background:#ff4d4f; }}
-    .label.Feature {{ background:#2f80ed; }}
-    .label.Improvement {{ background:#27ae60; }}
-    .card .title {{ margin:0; font-size:13px; }}
-    .toolbar {{ margin-bottom:8px; }}
-    .btn {{ padding:6px 10px; border-radius:6px; background:#2f80ed; color:#fff; border:none; cursor:pointer; }}
-    .btn.secondary {{ background:#777; }}
-    .small {{ font-size:12px; color:#666; }}
-    textarea.card-edit {{ width:100%; box-sizing:border-box; }}
+    body {{ font-family: Arial; }}
+    .board {{ display:flex; gap:14px; }}
+    .column {{ width:260px; padding:10px; background:#f4f6f8; border-radius:8px; }}
+    .col-title {{ font-weight:bold; margin-bottom:6px; }}
+    .card {{ background:#fff; padding:8px; border-radius:6px; margin-bottom:8px;
+             box-shadow:0 1px 2px rgba(0,0,0,0.1); }}
+    .label {{ font-size:11px; padding:2px 6px; color:white; border-radius:5px; }}
+    .Feature {{ background:#2f80ed; }}
+    .Improvement {{ background:#27ae60; }}
+    .Bug {{ background:#ff4d4f; }}
   </style>
 </head>
 <body>
-  <div class="toolbar">
-    <button class="btn" id="exportBtn">Export JSON</button>
-    <button class="btn secondary" id="copyBtn">Copy JSON</button>
-  </div>
 
-  <div id="board" class="board"></div>
+<div>
+  <button id="exportBtn">Export JSON</button>
+</div>
 
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
-  <script>
-    const initial = {initial_state};
+<div id="board" class="board"></div>
 
-    function createCardElement(item) {{
-      const div = document.createElement("div");
-      div.className = "card";
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+<script>
+  const initial = {initial_state};
 
-      const labelSpan = document.createElement("div");
-      labelSpan.className = "label " + (item.label || "Feature");
-      labelSpan.innerText = item.label || "Feature";
+  function buildCard(item) {{
+    let div = document.createElement("div");
+    div.className = "card";
 
-      const title = document.createElement("div");
-      title.className = "title";
-      title.innerText = item.text || "";
+    let label = document.createElement("div");
+    label.className = "label " + item.label;
+    label.innerText = item.label;
 
-      const editBtn = document.createElement("button");
-      editBtn.textContent = "Edit";
-      editBtn.style.marginTop = "6px";
-      editBtn.style.fontSize = "11px";
+    let title = document.createElement("div");
+    title.innerText = item.text;
 
-      editBtn.addEventListener("click", function() {{
-        // replace title with textarea
-        const ta = document.createElement("textarea");
-        ta.className = "card-edit";
-        ta.value = title.innerText;
-        div.replaceChild(ta, title);
-        editBtn.style.display = "none";
+    div.appendChild(label);
+    div.appendChild(title);
+    return div;
+  }}
 
-        ta.addEventListener("blur", function() {{
-          title.innerText = ta.value;
-          div.replaceChild(title, ta);
-          editBtn.style.display = "inline-block";
-        }});
+  function render(state) {{
+    const board = document.getElementById("board");
+    board.innerHTML = "";
+
+    for (const col of Object.keys(state)) {{
+      let colDiv = document.createElement("div");
+      colDiv.className = "column";
+
+      let title = document.createElement("div");
+      title.className = "col-title";
+      title.innerText = col;
+
+      let list = document.createElement("div");
+      list.className = "list";
+      list.dataset.col = col;
+
+      state[col].forEach(item => list.appendChild(buildCard(item)));
+
+      colDiv.appendChild(title);
+      colDiv.appendChild(list);
+      board.appendChild(colDiv);
+
+      new Sortable(list, {{
+        group: "kanban",
+        animation: 150
       }});
-
-      // container
-      div.appendChild(labelSpan);
-      div.appendChild(title);
-      div.appendChild(editBtn);
-
-      return div;
     }}
+  }}
 
-    function renderBoard(state) {{
-      const board = document.getElementById("board");
-      board.innerHTML = "";
-      for (const colName of Object.keys(state)) {{
-        const col = document.createElement("div");
-        col.className = "column";
-        const h = document.createElement("div");
-        h.className = "col-title";
-        h.innerText = colName;
-        col.appendChild(h);
+  function exportData() {{
+    const lists = document.querySelectorAll(".list");
+    let data = {{}};
 
-        const list = document.createElement("div");
-        list.className = "card-list";
-        list.setAttribute("data-col", colName);
-
-        for (const item of state[colName]) {{
-          const el = createCardElement(item);
-          // store raw data on element
-          el.dataset.item = JSON.stringify(item);
-          list.appendChild(el);
-        }}
-
-        col.appendChild(list);
-        board.appendChild(col);
-
-        // make sortable
-        new Sortable(list, {{
-          group: 'kanban',
-          animation: 150,
-          onAdd: function (evt) {{
-            // nothing special now
-          }}
-        }});
-      }}
-    }}
-
-    function getBoardState() {{
-      const state = {{}};
-      const columns = document.querySelectorAll(".card-list");
-      columns.forEach(col => {{
-        const name = col.getAttribute("data-col");
-        state[name] = [];
-        const children = Array.from(col.children);
-        children.forEach(ch => {{
-          // find label and title
-          const labelEl = ch.querySelector(".label");
-          const titleEl = ch.querySelector(".title");
-          const label = labelEl ? labelEl.innerText : "Feature";
-          const text = titleEl ? titleEl.innerText : "";
-          state[name].push({{text: text, label: label}});
-        }});
-      }});
-      return state;
-    }}
-
-    document.getElementById("exportBtn").addEventListener("click", function() {{
-      const data = getBoardState();
-      const jsonStr = JSON.stringify(data, null, 2);
-      const blob = new Blob([jsonStr], {{type: "application/json"}});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "kanban_export.json";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    }});
-
-    document.getElementById("copyBtn").addEventListener("click", function() {{
-      const data = getBoardState();
-      navigator.clipboard.writeText(JSON.stringify(data, null, 2)).then(function() {{
-        alert("JSON copied to clipboard. You can paste it into Upload control on left to save server-side.");
+    lists.forEach(list => {{
+      let col = list.dataset.col;
+      data[col] = [];
+      list.childNodes.forEach(card => {{
+        const label = card.children[0].innerText;
+        const text = card.children[1].innerText;
+        data[col].push({{text:text, label:label}});
       }});
     }});
 
-    // initial render
-    renderBoard(initial);
+    const blob = new Blob([JSON.stringify(data, null, 2)], {{type:"application/json"}});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "kanban_export.json";
+    a.click();
+  }}
 
-  </script>
+  document.getElementById("exportBtn").onclick = exportData;
+
+  render(initial);
+</script>
+
 </body>
 </html>
 """
 
-        # embed the HTML
-        st.components.v1.html(html, height=600, scrolling=True)
+        st.components.v1.html(html, height=650, scrolling=True)
