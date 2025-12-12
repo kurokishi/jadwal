@@ -66,32 +66,68 @@ config = st.session_state["config"]
 
 try:
     print(f"🕐 Initializing TimeParser: start={config.start_hour}:{config.start_minute}, interval={config.interval_minutes}")
+    
+    # Inisialisasi TimeParser HANYA SEKALI
     time_parser = TimeParser(
         start_hour=config.start_hour,
         start_minute=config.start_minute,
         interval_minutes=config.interval_minutes
     )
     
-    # Test TimeParser
-    time_parser = TimeParser(
-        start_hour=config.start_hour,
-        start_minute=config.start_minute,
-        interval_minutes=config.interval_minutes
-    )
+    # Test TimeParser dengan generate slots
+    slots = time_parser.generate_slot_strings()
+    print(f"🕐 Generated {len(slots)} time slots: {slots[:3]}...")
     
+    # Inisialisasi objek lainnya
     cleaner = DataCleaner()
-    analyzer = ErrorAnalyzer()
-    scheduler = Scheduler(parser=time_parser, cleaner=cleaner, config=config)
-    writer = ExcelWriter(config=config)
-    validator = Validator()  # Initialize validator
+    print("✅ DataCleaner initialized")
     
-    print("✅ All core objects initialized")
+    analyzer = ErrorAnalyzer()
+    print("✅ ErrorAnalyzer initialized")
+    
+    scheduler = Scheduler(
+        parser=time_parser,
+        cleaner=cleaner,
+        config=config
+    )
+    print("✅ Scheduler initialized")
+    
+    writer = ExcelWriter(config=config)
+    print("✅ ExcelWriter initialized")
+    
+    validator = Validator()
+    print("✅ Validator initialized")
+    
+    print("✅ All core objects initialized successfully")
     
 except Exception as e:
     print(f"❌ Error initializing core objects: {e}")
     st.error(f"Error initializing application: {e}")
     st.code(traceback.format_exc())
     st.stop()
+
+# ============================================================
+# PAGE SETUP
+# ============================================================
+
+st.set_page_config(
+    page_title="Jadwal Dokter",
+    layout="wide",
+    page_icon="🗓️"
+)
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+render_sidebar(config)
+
+# ============================================================
+# MAIN CONTENT
+# ============================================================
+
+st.title("🗓️ Sistem Jadwal Dokter")
+st.caption("Aplikasi untuk mengelola jadwal dokter reguler dan poleks")
 
 # ============================================================
 # TAB SYSTEM
@@ -120,3 +156,79 @@ with tab4:
 
 with tab5:
     render_drag_kanban()
+
+# ============================================================
+# FOOTER & DEBUG INFO
+# ============================================================
+
+st.divider()
+
+with st.expander("ℹ️ Debug Information"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Session State Keys:**")
+        for key in st.session_state.keys():
+            st.write(f"- {key}")
+    
+    with col2:
+        st.write("**Configuration:**")
+        st.write(f"- Start Time: {config.start_hour:02d}:{config.start_minute:02d}")
+        st.write(f"- Interval: {config.interval_minutes} menit")
+        st.write(f"- Max Poleks per Slot: {config.max_poleks_per_slot}")
+        st.write(f"- Auto Fix Errors: {config.auto_fix_errors}")
+        st.write(f"- Enable Sabtu: {config.enable_sabtu}")
+        st.write(f"- Hari List: {config.hari_list}")
+
+# ============================================================
+# STYLE CUSTOMIZATION
+# ============================================================
+
+st.markdown("""
+<style>
+    /* Main container */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    
+    /* Tabs styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f0f2f6;
+        border-radius: 8px 8px 0px 0px;
+        gap: 8px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: #ffffff;
+        font-weight: bold;
+    }
+    
+    /* Button styling */
+    .stButton button {
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        font-weight: 500;
+    }
+    
+    /* Success/Error messages */
+    .stAlert {
+        border-radius: 8px;
+    }
+    
+    /* Dataframe styling */
+    .dataframe {
+        border-radius: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+print("✅ Jadwal.py initialized and running successfully")
