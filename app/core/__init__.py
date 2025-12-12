@@ -1,15 +1,18 @@
 """
 Core logic package.
 
-This folder contains the main logic modules such as:
+This folder contains the main backend modules:
 - scheduler
 - analyzer
 - excel_writer
-- cleaner
-- time_parser
 - validator
+- time_parser
+- cleaner
 """
-from .scheduler import Scheduler
-from .analyzer import Analyzer
-from .excel_writer import ExcelWriter
-from .validator import Validator
+
+# NOTE:
+# DO NOT import internal classes here to avoid circular import issues.
+# Import classes explicitly where needed:
+#   from app.core.scheduler import Scheduler
+#   from app.core.analyzer import Analyzer
+"""
