@@ -1,7 +1,4 @@
+# app/__init__.py
 """
-Utility helpers package.
-
-Contains shared tools such as:
-- config loader
-- time helpers
+App package for Scheduler, Writer, Analyzer, and UI modules.
 """
