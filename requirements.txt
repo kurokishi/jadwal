@@ -1,13 +1,13 @@
-streamlit==1.32.0
-pandas==2.2.1
-openpyxl==3.1.2
-matplotlib==3.8.2
-streamlit-sortable==0.2.0
+streamlit
+pandas
+openpyxl
+matplotlib
+streamlit-sortable
 
 # opsional tapi direkomendasikan
-numpy==1.26.4
-python-dateutil==2.8.2
-pytz==2024.1
+numpy
+python-dateutil
+pytz
 
 # jika ingin Excel writer lebih kompatibel
-xlsxwriter==3.2.0
+xlsxwriter
