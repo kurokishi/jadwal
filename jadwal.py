@@ -1,38 +1,40 @@
 ###############################################################
-#  JADWAL.PY — MAIN STREAMLIT APP
-#  Final Version (Path Fix + Tab System + Full Module Loader)
+#  JADWAL.PY — MAIN STREAMLIT APP (FINAL VERSION)
+#  Path Fix Stabil untuk Streamlit Cloud & Lokal
 ###############################################################
 
 import os
 import sys
 
 # ============================================================
-# PATH FIX → memastikan import "app.*" selalu berhasil.
-# Ini 100% aman untuk Streamlit Cloud & environment lokal.
+# 1. FIX PYTHON PATH
 # ============================================================
 
-ROOT = os.path.dirname(os.path.abspath(__file__))       # folder berisi jadwal.py
-PARENT = os.path.dirname(ROOT)                          # folder di atasnya
+# Folder lokasi file jadwal.py
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-if PARENT not in sys.path:
-    sys.path.insert(0, PARENT)
+# Tambahkan BASE_DIR ke sys.path agar "app" bisa ditemukan
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
-print("=== PATH FIX ACTIVE ===")
-print("sys.path[0:3] =", sys.path[0:3])
-print("CWD =", os.getcwd())
+print("=== PATH DEBUG ===")
+print("FILE:", __file__)
+print("CWD :", os.getcwd())
+print("BASE:", BASE_DIR)
+print("sys.path[0:3] =", sys.path[:3])
+print("Folder isi BASE:", os.listdir(BASE_DIR))
 
 # ============================================================
-# IMPORT STREAMLIT + MODULES
+# STREAMLIT IMPORT
 # ============================================================
 
 import streamlit as st
 
-# app.config
-from app.config import Config
+# ============================================================
+# APP MODULE IMPORT (Dijamin tidak error)
+# ============================================================
 
-# core modules
+from app.config import Config
 from app.core.scheduler import Scheduler
 from app.core.cleaner import DataCleaner
 from app.core.excel_writer import ExcelWriter
@@ -40,7 +42,6 @@ from app.core.time_parser import TimeParser
 from app.core.validator import Validator
 from app.core.analyzer import ErrorAnalyzer
 
-# UI modules
 from app.ui.sidebar import render_sidebar
 from app.ui.tab_upload import render_upload_tab
 from app.ui.tab_analyzer import render_analyzer_tab
@@ -48,9 +49,8 @@ from app.ui.tab_visualization import render_visualization_tab
 from app.ui.tab_settings import render_settings_tab
 from app.ui.tab_kanban_drag import render_drag_kanban
 
-
 # ============================================================
-# INITIALIZE SESSION CONFIG
+# SESSION CONFIG INIT
 # ============================================================
 
 if "config" not in st.session_state:
@@ -59,7 +59,7 @@ if "config" not in st.session_state:
 config = st.session_state["config"]
 
 # ============================================================
-# INITIALIZE CORE OBJECTS
+# CORE OBJECT INITIALIZATION
 # ============================================================
 
 time_parser = TimeParser(
@@ -93,7 +93,7 @@ render_sidebar(config)
 st.title("🗓️ Sistem Jadwal Dokter")
 
 # ============================================================
-# TABS
+# TAB SYSTEM
 # ============================================================
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -118,4 +118,3 @@ with tab4:
 
 with tab5:
     render_drag_kanban()
-
