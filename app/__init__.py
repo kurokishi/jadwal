@@ -1,5 +1,7 @@
 """
-Root package for the application.
+Utility helpers package.
 
-This file ensures that the 'app' folder is recognized as a Python package.
+Contains shared tools such as:
+- config loader
+- time helpers
 """
