@@ -4,7 +4,17 @@ import pandas as pd
 import io
 import traceback
 
-def render_upload_tab(scheduler, writer, analyzer, config):
+def render_upload_tab(scheduler, writer, analyzer, validator, config):
+    """
+    Tab untuk upload dan proses file Excel
+    
+    Args:
+        scheduler: Scheduler instance
+        writer: ExcelWriter instance
+        analyzer: ErrorAnalyzer instance
+        validator: Validator instance
+        config: Config instance
+    """
     st.subheader("📤 Upload & Proses Jadwal")
     
     # ======================================================
@@ -59,7 +69,9 @@ def render_upload_tab(scheduler, writer, analyzer, config):
                         grid_df, slot_strings, errors = scheduler.process_dataframe(io.BytesIO(file_bytes))
                         
                         # Debug output
-                        st.write(f"2. Hasil: grid_df={grid_df is not None}, slots={len(slot_strings) if slot_strings else 0}, errors={len(errors)}")
+                        st.write(f"2. Hasil: grid_df={'Ada' if grid_df is not None else 'Tidak'}, "
+                               f"slots={len(slot_strings) if slot_strings else 0}, "
+                               f"errors={len(errors) if errors else 0}")
                         
                         if grid_df is not None:
                             # Simpan ke session state
@@ -138,9 +150,10 @@ def render_upload_tab(scheduler, writer, analyzer, config):
                                 st.write("Tidak ada error detail yang diberikan")
                             
                             # Debug info
-                            st.write("**Debug info:**")
-                            st.write(f"- Uploaded file size: {len(file_bytes)} bytes")
-                            st.write(f"- File name: {uploaded_file.name}")
+                            with st.expander("🔍 Debug Info"):
+                                st.write(f"- Uploaded file size: {len(file_bytes)} bytes")
+                                st.write(f"- File name: {uploaded_file.name}")
+                                st.write(f"- File type: {uploaded_file.type}")
                             
                     except Exception as e:
                         st.error(f"❌ Error saat memproses: {str(e)}")
