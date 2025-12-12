@@ -1,4 +1,3 @@
-# app/core/time_parser.py
 import re
 import pandas as pd
 from datetime import time, datetime
@@ -62,15 +61,3 @@ class TimeParser:
             current_time += self.interval_minutes
         
         return slot_strings
-    
-    def time_to_slot_index(self, time_obj):
-        """
-        Konversi waktu ke index slot
-        """
-        total_minutes = time_obj.hour * 60 + time_obj.minute
-        start_minutes = self.start_hour * 60 + self.start_minute
-        
-        if total_minutes < start_minutes:
-            return -1
-        
-        return (total_minutes - start_minutes) // self.interval_minutes
