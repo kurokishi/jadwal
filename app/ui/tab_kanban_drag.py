@@ -3,6 +3,7 @@
 import streamlit as st
 import json
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
 # ============================================================
@@ -179,7 +180,9 @@ def analyze_empty_slots(df, slot_strings):
             empty_in_peak = 0
             for slot in peak_slots:
                 if slot in poli_data.columns:
-                    if (poli_data[slot].isin(["R", "E"])).sum() == 0:
+                    # Check if slot has any R or E values
+                    slot_values = poli_data[slot].values
+                    if not any(val in ["R", "E"] for val in slot_values):
                         empty_in_peak += 1
             
             if empty_in_peak >= 2:  # At least 2 empty slots in peak hours
@@ -208,11 +211,21 @@ def analyze_distribution(df, slot_strings):
         morning_slots = [s for s in slot_strings if s < "12:00"]
         afternoon_slots = [s for s in slot_strings if s >= "12:00"]
         
-        morning_count = sum((poli_data[morning_slots] == "R").sum().sum(), 
-                           (poli_data[morning_slots] == "E").sum().sum()) if morning_slots else 0
+        # Initialize counts
+        morning_count = 0
+        afternoon_count = 0
         
-        afternoon_count = sum((poli_data[afternoon_slots] == "R").sum().sum(),
-                             (poli_data[afternoon_slots] == "E").sum().sum()) if afternoon_slots else 0
+        # Count R and E slots for morning
+        for slot in morning_slots:
+            if slot in poli_data.columns:
+                morning_count += (poli_data[slot] == "R").sum()
+                morning_count += (poli_data[slot] == "E").sum()
+        
+        # Count R and E slots for afternoon
+        for slot in afternoon_slots:
+            if slot in poli_data.columns:
+                afternoon_count += (poli_data[slot] == "R").sum()
+                afternoon_count += (poli_data[slot] == "E").sum()
         
         total = morning_count + afternoon_count
         if total > 0:
@@ -275,7 +288,7 @@ def render_drag_kanban():
         st.header("⚙️ Kontrol Kanban")
         
         # Generate cards from schedule
-        if st.button("🔄 Generate dari Jadwal", use_container_width=True):
+        if st.button("🔄 Generate dari Jadwal", width='stretch'):
             if "processed_data" in st.session_state:
                 issues = get_schedule_issues()
                 
@@ -301,7 +314,7 @@ def render_drag_kanban():
             new_priority = st.selectbox("Prioritas", list(PRIORITY_COLORS.keys()))
             target_column = st.selectbox("Kolom Tujuan", list(kanban_data.keys()))
             
-            if st.form_submit_button("Tambah Kartu", use_container_width=True):
+            if st.form_submit_button("Tambah Kartu", width='stretch'):
                 if new_text.strip():
                     kanban_data[target_column].append({
                         "text": new_text,
@@ -319,15 +332,15 @@ def render_drag_kanban():
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("📥 Download JSON", use_container_width=True):
-                json_str = json.dumps(kanban_data, indent=2, ensure_ascii=False)
-                st.download_button(
-                    label="⬇️ Klik untuk download",
-                    data=json_str,
-                    file_name=f"kanban_jadwal_{datetime.now().strftime('%Y%m%d')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
+            # Create download button
+            json_str = json.dumps(kanban_data, indent=2, ensure_ascii=False)
+            st.download_button(
+                label="📥 Download JSON",
+                data=json_str,
+                file_name=f"kanban_jadwal_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
         
         with col2:
             uploaded = st.file_uploader("Upload JSON", type=["json"], label_visibility="collapsed")
@@ -343,12 +356,12 @@ def render_drag_kanban():
         st.divider()
         
         # Reset buttons
-        if st.button("🗑️ Reset ke Default", use_container_width=True):
+        if st.button("🗑️ Reset ke Default", width='stretch'):
             save_kanban_data(DEFAULT_KANBAN.copy())
             st.success("Reset berhasil!")
             st.rerun()
         
-        if st.button("🧹 Kosongkan Semua", use_container_width=True, type="secondary"):
+        if st.button("🧹 Kosongkan Semua", width='stretch', type="secondary"):
             for column in kanban_data:
                 kanban_data[column] = []
             save_kanban_data(kanban_data)
