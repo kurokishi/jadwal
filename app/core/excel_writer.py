@@ -48,6 +48,21 @@ class ExcelWriter:
         self.fill_conflict = PatternFill("solid", fgColor="FFD966")  # Kuning - Konflik ringan
         self.fill_conflict_hard = PatternFill("solid", fgColor="FF4500")  # Merah tua - Konflik berat
         
+        # Warna untuk Kanban
+        self.fill_kanban_header = PatternFill("solid", fgColor="7030A0")  # Ungu - Header Kanban
+        self.fill_high = PatternFill("solid", fgColor="FF4D4F")          # Merah - Prioritas Tinggi
+        self.fill_medium = PatternFill("solid", fgColor="FAAD14")        # Kuning - Prioritas Sedang
+        self.fill_low = PatternFill("solid", fgColor="52C41A")           # Hijau - Prioritas Rendah
+        
+        # Warna label Kanban
+        self.fill_overload = PatternFill("solid", fgColor="FF7875")      # Merah muda - Overload
+        self.fill_konflik = PatternFill("solid", fgColor="FF9C6E")       # Oranye - Konflik
+        self.fill_kosong = PatternFill("solid", fgColor="69C0FF")        # Biru muda - Kosong
+        self.fill_distribusi = PatternFill("solid", fgColor="95DE64")    # Hijau muda - Distribusi
+        self.fill_beban = PatternFill("solid", fgColor="B37FEB")         # Ungu muda - Beban
+        self.fill_review = PatternFill("solid", fgColor="FFD666")        # Kuning muda - Review
+        self.fill_optimal = PatternFill("solid", fgColor="5CDBD3")       # Cyan - Optimal
+        
         # Font
         self.font_header = Font(bold=True, color="FFFFFF", size=11)
         self.font_normal = Font(size=10)
@@ -77,7 +92,7 @@ class ExcelWriter:
     # MAIN WRITE METHOD
     # ======================================================
     
-    def write(self, source_file, df_grid, slot_str):
+    def write(self, source_file, df_grid, slot_str, kanban_data=None):
         """
         Tulis hasil jadwal ke file Excel dengan multiple sheets
         
@@ -85,6 +100,7 @@ class ExcelWriter:
             source_file: File Excel asli (BytesIO atau path) sebagai template
             df_grid: DataFrame hasil scheduler (format grid)
             slot_str: List string slot waktu
+            kanban_data: Data kanban board (default: None)
             
         Returns:
             BytesIO buffer berisi file Excel
@@ -93,6 +109,7 @@ class ExcelWriter:
         print(f"   - df_grid shape: {df_grid.shape if df_grid is not None else 'None'}")
         print(f"   - slot_str length: {len(slot_str) if slot_str else 0}")
         print(f"   - Max poleks per slot: {self.max_e}")
+        print(f"   - Kanban data: {'Available' if kanban_data else 'Not available'}")
         
         try:
             # Load atau buat workbook
@@ -106,6 +123,7 @@ class ExcelWriter:
             
             # Urutan pembuatan sheets
             sheets_to_create = [
+                ("Summary", lambda wb, df, slots: self._create_summary_sheet(wb, df, slots)),
                 ("Jadwal", self._create_jadwal_sheet),
                 ("Rekap Layanan", lambda wb, df, slots: self._create_rekap_layanan_sheet(wb, df, slots)),
                 ("Rekap Poli", lambda wb, df, slots: self._create_rekap_poli_sheet(wb, df, slots)),
@@ -114,7 +132,7 @@ class ExcelWriter:
                 ("Conflict Dokter", lambda wb, df, slots: self._create_conflict_doctor_sheet(wb, df, slots)),
                 ("Peta Konflik Dokter", lambda wb, df, slots: self._create_conflict_map_sheet(wb, df, slots)),
                 ("Grafik Poli", lambda wb, df, slots: self._create_grafik_poli_sheet(wb, df)),
-                ("Summary", lambda wb, df, slots: self._create_summary_sheet(wb, df, slots)),
+                ("Kanban Board", lambda wb, df, slots: self._create_kanban_sheet(wb, df, slots, kanban_data)),
             ]
             
             # Buat semua sheets
@@ -206,7 +224,7 @@ class ExcelWriter:
                 sheets_to_remove = ["Jadwal", "Rekap Layanan", "Rekap Poli", 
                                   "Rekap Dokter", "Peak Hour Analysis", 
                                   "Conflict Dokter", "Peta Konflik Dokter",
-                                  "Grafik Poli", "Summary"]
+                                  "Grafik Poli", "Summary", "Kanban Board"]
                 
                 for sheet in sheets_to_remove:
                     if sheet in wb.sheetnames:
@@ -275,7 +293,7 @@ class ExcelWriter:
             ws_index = wb.sheetnames.index("Jadwal")
             del wb[wb.sheetnames[ws_index]]
         
-        ws = wb.create_sheet("Jadwal", 0)  # Buat sebagai sheet pertama
+        ws = wb.create_sheet("Jadwal")  # Buat sebagai sheet pertama
         
         # Header
         headers = ["POLI", "JENIS", "HARI", "DOKTER", "JAM"] + slot_str
@@ -782,6 +800,346 @@ class ExcelWriter:
         
         return ws
     
+    def _create_kanban_sheet(self, wb, df_grid, slot_str, kanban_data=None):
+        """Buat sheet Kanban Board"""
+        if "Kanban Board" in wb.sheetnames:
+            del wb["Kanban Board"]
+        
+        ws = wb.create_sheet("Kanban Board")
+        
+        # Title
+        ws.merge_cells("A1:F1")
+        title_cell = ws["A1"]
+        title_cell.value = "📌 KANBAN BOARD - MANAJEMEN JADWAL DOKTER"
+        title_cell.font = Font(bold=True, size=16, color="FFFFFF")
+        title_cell.fill = self.fill_kanban_header
+        title_cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Jika tidak ada kanban_data, buat default atau ambil dari analisis
+        if not kanban_data:
+            kanban_data = self._generate_kanban_from_analysis(df_grid, slot_str)
+        
+        # Define kanban columns
+        kanban_columns = {
+            "A3:E30": "⚠️ MASALAH JADWAL",
+            "G3:K30": "🔧 PERLU PENYESUAIAN",
+            "M3:Q30": "⏳ DALAM PROSES",
+            "S3:W30": "✅ OPTIMAL"
+        }
+        
+        # Write kanban data
+        row_start = 3
+        
+        for col_range, column_name in kanban_columns.items():
+            # Write column header
+            start_col = col_range.split(":")[0][0]  # Get first column letter
+            header_row = row_start
+            
+            ws.merge_cells(f"{start_col}{header_row}:{chr(ord(start_col) + 4)}{header_row}")
+            header_cell = ws[f"{start_col}{header_row}"]
+            header_cell.value = column_name
+            header_cell.font = Font(bold=True, size=12)
+            header_cell.fill = PatternFill("solid", fgColor="D9D9D9")
+            header_cell.alignment = Alignment(horizontal="center", vertical="center")
+            header_cell.border = self.thin_border
+            
+            # Get cards for this column
+            cards = kanban_data.get(column_name, [])
+            
+            # Write cards
+            card_row = header_row + 1
+            for card in cards:
+                if card_row > header_row + 25:  # Max 25 cards per column
+                    break
+                
+                # Card container (merge 5 cells vertically)
+                start_cell = f"{start_col}{card_row}"
+                end_cell = f"{chr(ord(start_col) + 4)}{card_row + 3}"
+                ws.merge_cells(f"{start_cell}:{end_cell}")
+                
+                card_cell = ws[start_cell]
+                card_cell.value = self._format_kanban_card(card)
+                card_cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+                card_cell.border = self.thin_border
+                
+                # Apply priority color
+                priority = card.get("priority", "Medium")
+                if priority == "High":
+                    card_cell.fill = self.fill_high
+                elif priority == "Medium":
+                    card_cell.fill = self.fill_medium
+                else:
+                    card_cell.fill = self.fill_low
+                
+                # Apply label color
+                label = card.get("label", "")
+                label_fill = self._get_label_fill(label)
+                if label_fill:
+                    # Create a small label indicator in top right
+                    label_cell = ws[f"{chr(ord(start_col) + 3)}{card_row}"]
+                    label_cell.value = f" [{label}]"
+                    label_cell.font = Font(size=8, bold=True, color="FFFFFF")
+                    label_cell.fill = label_fill
+                    label_cell.alignment = Alignment(horizontal="right", vertical="top")
+                
+                card_row += 4
+        
+        # Statistics section
+        stats_row = 35
+        ws.merge_cells(f"A{stats_row}:F{stats_row}")
+        stats_title = ws[f"A{stats_row}"]
+        stats_title.value = "📊 STATISTIK KANBAN"
+        stats_title.font = Font(bold=True, size=12)
+        stats_title.alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Calculate statistics
+        total_cards = 0
+        high_priority = 0
+        
+        for column_name, cards in kanban_data.items():
+            total_cards += len(cards)
+            high_priority += sum(1 for card in cards if card.get("priority") == "High")
+        
+        # Write statistics
+        ws.append([])  # Empty row
+        
+        stats_data = [
+            ["Total Kartu", total_cards],
+            ["Prioritas Tinggi", high_priority],
+            ["Masalah Jadwal", len(kanban_data.get("⚠️ MASALAH JADWAL", []))],
+            ["Perlu Penyesuaian", len(kanban_data.get("🔧 PERLU PENYESUAIAN", []))],
+            ["Dalam Proses", len(kanban_data.get("⏳ DALAM PROSES", []))],
+            ["Optimal", len(kanban_data.get("✅ OPTIMAL", []))]
+        ]
+        
+        for i, (label, value) in enumerate(stats_data):
+            ws.append([label, value])
+        
+        # Style statistics
+        for row in range(stats_row + 2, stats_row + 2 + len(stats_data)):
+            for col in range(1, 3):
+                cell = ws.cell(row=row, column=col)
+                cell.border = self.thin_border
+                if col == 1:
+                    cell.font = Font(bold=True)
+                    cell.alignment = self.align_left
+                else:
+                    cell.alignment = self.align_center
+        
+        # Instructions section
+        instr_row = stats_row + 2 + len(stats_data) + 2
+        ws.merge_cells(f"A{instr_row}:F{instr_row}")
+        instr_title = ws[f"A{instr_row}"]
+        instr_title.value = "📋 INSTRUKSI"
+        instr_title.font = Font(bold=True, size=12)
+        instr_title.alignment = Alignment(horizontal="center", vertical="center")
+        
+        instructions = [
+            "1. KANBAN COLORS:",
+            "   • Merah = Prioritas Tinggi",
+            "   • Kuning = Prioritas Sedang",
+            "   • Hijau = Prioritas Rendah",
+            "",
+            "2. LABEL COLORS:",
+            "   • Overload = Merah Muda",
+            "   • Konflik = Oranye",
+            "   • Kosong = Biru Muda",
+            "   • Distribusi = Hijau Muda",
+            "   • Beban = Ungu Muda",
+            "   • Review = Kuning Muda",
+            "   • Optimal = Cyan",
+            "",
+            "3. KOLOM:",
+            "   • ⚠️ MASALAH JADWAL = Masalah kritis yang perlu segera ditangani",
+            "   • 🔧 PERLU PENYESUAIAN = Jadwal yang perlu dioptimalkan",
+            "   • ⏳ DALAM PROSES = Masalah sedang ditangani",
+            "   • ✅ OPTIMAL = Jadwal yang sudah optimal",
+            "",
+            "Generated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ]
+        
+        for i, line in enumerate(instructions):
+            ws.cell(row=instr_row + 1 + i, column=1, value=line)
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 20
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 5
+        ws.column_dimensions['D'].width = 5
+        ws.column_dimensions['E'].width = 5
+        ws.column_dimensions['F'].width = 5
+        ws.column_dimensions['G'].width = 20
+        ws.column_dimensions['H'].width = 15
+        ws.column_dimensions['I'].width = 5
+        ws.column_dimensions['J'].width = 5
+        ws.column_dimensions['K'].width = 5
+        ws.column_dimensions['M'].width = 20
+        ws.column_dimensions['N'].width = 15
+        ws.column_dimensions['O'].width = 5
+        ws.column_dimensions['P'].width = 5
+        ws.column_dimensions['Q'].width = 5
+        ws.column_dimensions['S'].width = 20
+        ws.column_dimensions['T'].width = 15
+        ws.column_dimensions['U'].width = 5
+        ws.column_dimensions['V'].width = 5
+        ws.column_dimensions['W'].width = 5
+        
+        return ws
+    
+    def _generate_kanban_from_analysis(self, df_grid, slot_str):
+        """Generate kanban data dari analisis jadwal jika tidak ada data kanban"""
+        kanban_data = {
+            "⚠️ MASALAH JADWAL": [],
+            "🔧 PERLU PENYESUAIAN": [],
+            "⏳ DALAM PROSES": [],
+            "✅ OPTIMAL": []
+        }
+        
+        if df_grid is None or df_grid.empty:
+            # Default data jika tidak ada jadwal
+            kanban_data["⚠️ MASALAH JADWAL"].append({
+                "text": "Tidak ada data jadwal yang diproses",
+                "label": "Kosong",
+                "priority": "High"
+            })
+            return kanban_data
+        
+        try:
+            # 1. Cek overload slots
+            for hari in df_grid["HARI"].unique():
+                hari_data = df_grid[df_grid["HARI"] == hari]
+                
+                for slot in slot_str[:15]:  # Check first 15 slots
+                    if slot in hari_data.columns:
+                        e_count = (hari_data[slot] == "E").sum()
+                        
+                        if e_count > self.max_e:
+                            kanban_data["⚠️ MASALAH JADWAL"].append({
+                                "text": f"{hari} {slot}: {e_count} Poleks (batas {self.max_e})",
+                                "label": "Overload",
+                                "priority": "High"
+                            })
+            
+            # 2. Cek doctor conflicts
+            for (dokter, hari), group in df_grid.groupby(["DOKTER", "HARI"]):
+                if len(group) > 1:
+                    conflict_slots = []
+                    
+                    for slot in slot_str[:10]:
+                        if slot in group.columns:
+                            active_polis = group[group[slot].isin(["R", "E"])]["POLI"].tolist()
+                            if len(active_polis) > 1:
+                                conflict_slots.append(slot)
+                    
+                    if conflict_slots:
+                        kanban_data["⚠️ MASALAH JADWAL"].append({
+                            "text": f"Dr. {dokter} - {hari}: konflik di {len(conflict_slots)} slot",
+                            "label": "Konflik",
+                            "priority": "High"
+                        })
+            
+            # 3. Cek empty slots di peak hours
+            peak_slots = [s for s in slot_str if "10:00" <= s <= "12:00"]
+            
+            for hari in df_grid["HARI"].unique():
+                hari_data = df_grid[df_grid["HARI"] == hari]
+                
+                for poli in hari_data["POLI"].unique():
+                    poli_data = hari_data[hari_data["POLI"] == poli]
+                    
+                    empty_in_peak = 0
+                    for slot in peak_slots:
+                        if slot in poli_data.columns:
+                            slot_values = poli_data[slot].values
+                            if not any(val in ["R", "E"] for val in slot_values):
+                                empty_in_peak += 1
+                    
+                    if empty_in_peak >= 2:
+                        kanban_data["🔧 PERLU PENYESUAIAN"].append({
+                            "text": f"{poli} - {hari}: {empty_in_peak} slot kosong di jam sibuk",
+                            "label": "Kosong",
+                            "priority": "Medium"
+                        })
+            
+            # 4. Cek distribusi
+            for poli in df_grid["POLI"].unique():
+                poli_data = df_grid[df_grid["POLI"] == poli]
+                
+                morning_slots = [s for s in slot_str if s < "12:00"]
+                afternoon_slots = [s for s in slot_str if s >= "12:00"]
+                
+                morning_count = 0
+                afternoon_count = 0
+                
+                for slot in morning_slots:
+                    if slot in poli_data.columns:
+                        morning_count += int((poli_data[slot] == "R").sum())
+                        morning_count += int((poli_data[slot] == "E").sum())
+                
+                for slot in afternoon_slots:
+                    if slot in poli_data.columns:
+                        afternoon_count += int((poli_data[slot] == "R").sum())
+                        afternoon_count += int((poli_data[slot] == "E").sum())
+                
+                total = morning_count + afternoon_count
+                if total > 0:
+                    morning_pct = (morning_count / total) * 100
+                    
+                    if morning_pct > 70:
+                        kanban_data["🔧 PERLU PENYESUAIAN"].append({
+                            "text": f"{poli}: {morning_pct:.0f}% pagi, terlalu dominan",
+                            "label": "Distribusi",
+                            "priority": "Medium"
+                        })
+            
+            # 5. Temukan optimal schedules
+            for hari in df_grid["HARI"].unique():
+                hari_data = df_grid[df_grid["HARI"] == hari]
+                
+                for slot in ["10:00", "11:00", "13:00"]:
+                    if slot in hari_data.columns:
+                        doctor_count = (hari_data[slot].isin(["R", "E"])).sum()
+                        
+                        if 3 <= doctor_count <= 5:
+                            kanban_data["✅ OPTIMAL"].append({
+                                "text": f"{hari} {slot}: {int(doctor_count)} dokter (optimal)",
+                                "label": "Optimal",
+                                "priority": "Low"
+                            })
+            
+            # 6. Default dalam proses
+            kanban_data["⏳ DALAM PROSES"].append({
+                "text": "Review jadwal Poli Anak",
+                "label": "Review",
+                "priority": "Low"
+            })
+            
+        except Exception as e:
+            print(f"⚠️ Error generating kanban data: {e}")
+        
+        return kanban_data
+    
+    def _format_kanban_card(self, card):
+        """Format kanban card untuk ditampilkan di Excel"""
+        text = card.get("text", "")
+        label = card.get("label", "")
+        priority = card.get("priority", "Medium")
+        
+        return f"{text}\n\nLabel: {label}\nPrioritas: {priority}"
+    
+    def _get_label_fill(self, label):
+        """Get fill color untuk label"""
+        label_fills = {
+            "Overload": self.fill_overload,
+            "Konflik": self.fill_konflik,
+            "Kosong": self.fill_kosong,
+            "Distribusi": self.fill_distribusi,
+            "Beban": self.fill_beban,
+            "Review": self.fill_review,
+            "Optimal": self.fill_optimal
+        }
+        return label_fills.get(label)
+    
     def _create_summary_sheet(self, wb, df_grid, slot_str):
         """Buat sheet Summary dengan statistik"""
         if "Summary" in wb.sheetnames:
@@ -830,7 +1188,16 @@ class ExcelWriter:
         ws.append([])  # Empty row
         ws.append(["DAFTAR SHEET", "", "", ""])
         for i, sheet_name in enumerate(wb.sheetnames, 1):
-            ws.append([f"{i}.", sheet_name, "", ""])
+            if sheet_name != "Summary":  # Skip current sheet
+                ws.append([f"{i-1}.", sheet_name, "", ""])
+        
+        # Kanban info
+        ws.append([])  # Empty row
+        ws.append(["KANBAN BOARD", "", "", ""])
+        ws.append(["Sheet 'Kanban Board' berisi:", "", "", ""])
+        ws.append(["• Analisis masalah jadwal", "", "", ""])
+        ws.append(["• Prioritas perbaikan", "", "", ""])
+        ws.append(["• Status penyelesaian", "", "", ""])
         
         # Timestamp
         ws.append([])  # Empty row
@@ -998,7 +1365,7 @@ class ExcelWriter:
         title_cell.fill = PatternFill("solid", fgColor="4F81BD")
         
         # Style section headers
-        section_rows = [3, 14, 22]  # Row numbers dengan section headers
+        section_rows = [3, 14, 22, 30]  # Row numbers dengan section headers
         for row in section_rows:
             if row <= ws.max_row:
                 cell = ws.cell(row=row, column=1)
@@ -1062,7 +1429,8 @@ class ExcelWriter:
             "Peak Hour Analysis",
             "Conflict Dokter",
             "Peta Konflik Dokter",
-            "Grafik Poli"
+            "Grafik Poli",
+            "Kanban Board"
         ]
         
         # Hanya reorder sheets yang ada
@@ -1365,19 +1733,24 @@ class ExcelWriter:
             "",
             "5. OUTPUT:",
             "   - File hasil berisi 10+ sheet dengan analisis lengkap",
-            "   - Termasuk deteksi konflik dan statistik",
+            "   - Termasuk deteksi konflik, statistik, dan Kanban Board",
             "",
             "6. WARNA PADA SHEET JADWAL:",
             "   - HIJAU: Jadwal Reguler (R)",
             "   - BIRU: Jadwal Poleks dalam batas",
             "   - MERAH: Jadwal Poleks melebihi batas",
             "",
+            "7. KANBAN BOARD:",
+            "   - Sheet khusus untuk manajemen masalah jadwal",
+            "   - Prioritas: Merah (Tinggi), Kuning (Sedang), Hijau (Rendah)",
+            "   - Kolom: Masalah, Perlu Penyesuaian, Dalam Proses, Optimal",
+            "",
             "© 2024 Sistem Jadwal Dokter"
         ]
         
         for i, line in enumerate(instructions, start=1):
             ws.cell(row=i, column=1, value=line)
-            if line.startswith(("1.", "2.", "3.", "4.", "5.", "6.")):
+            if line.startswith(("1.", "2.", "3.", "4.", "5.", "6.", "7.")):
                 ws.cell(row=i, column=1).font = Font(bold=True)
         
         # Title style
