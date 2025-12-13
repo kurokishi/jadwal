@@ -1,232 +1,392 @@
-# app/ui/tab_upload.py
-import streamlit as st
+# app/core/cleaner.py
+"""
+DataCleaner - Modul untuk membersihkan data Excel sebelum diproses
+"""
+
 import pandas as pd
 import io
+import re
+from typing import Union, List
 import traceback
 
-def render_upload_tab(scheduler, writer, analyzer, validator, config):
-    st.subheader("📤 Upload & Proses Jadwal")
+
+class DataCleaner:
+    """
+    Class untuk membersihkan data dari berbagai sumber input
+    """
     
-    # ======================================================
-    # UPLOAD FILE
-    # ======================================================
-    uploaded_file = st.file_uploader(
-        "Upload file Excel (Format: sheet Reguler & Poleks)",
-        type=['xlsx', 'xls'],
-        help="File harus memiliki sheet 'Reguler' dan 'Poleks'"
-    )
+    def __init__(self):
+        """Inisialisasi DataCleaner"""
+        print("✅ DataCleaner initialized")
     
-    if uploaded_file is not None:
+    def clean(self, df_or_file) -> pd.DataFrame:
+        """
+        Clean data dari berbagai sumber
+        
+        Args:
+            df_or_file: Bisa berupa:
+                      1. BytesIO (file upload Streamlit)
+                      2. String path ke file
+                      3. DataFrame
+            
+        Returns:
+            DataFrame yang sudah dibersihkan
+        """
+        print(f"🔧 DataCleaner.clean() called with type: {type(df_or_file)}")
+        
         try:
-            # Simpan file bytes untuk digunakan kembali
-            file_bytes = uploaded_file.getvalue()
+            # Case 1: BytesIO (file upload Streamlit)
+            if isinstance(df_or_file, io.BytesIO):
+                print("   Input is BytesIO, reading Excel file...")
+                return self._clean_from_bytesio(df_or_file)
             
-            # Validasi file
-            st.info("🔍 Memvalidasi file...")
+            # Case 2: String path
+            elif isinstance(df_or_file, str):
+                print(f"   Input is string path: {df_or_file}")
+                if df_or_file.endswith(('.xlsx', '.xls')):
+                    return self._clean_from_excel(df_or_file)
+                else:
+                    raise ValueError(f"File format not supported: {df_or_file}")
             
-            # Buat BytesIO dari file bytes
-            file_stream = io.BytesIO(file_bytes)
-            file_stream.seek(0)  # Pastikan di awal
+            # Case 3: DataFrame
+            elif isinstance(df_or_file, pd.DataFrame):
+                print("   Input is DataFrame, cleaning directly...")
+                return self._clean_dataframe(df_or_file)
             
-            is_valid, message = validator.validate_excel_file(file_stream)
+            # Case 4: Bytes (raw bytes)
+            elif isinstance(df_or_file, bytes):
+                print("   Input is bytes, converting to BytesIO...")
+                return self._clean_from_bytesio(io.BytesIO(df_or_file))
             
-            if not is_valid:
-                st.error(f"❌ File tidak valid: {message}")
-                return
-            
-            st.success("✅ File valid!")
-            
-            # Preview file
-            with st.expander("📄 Preview File Upload"):
-                try:
-                    # Reset stream untuk preview
-                    file_stream.seek(0)
-                    excel_data = pd.ExcelFile(file_stream)
-                    st.write(f"**Sheet yang ditemukan:** {excel_data.sheet_names}")
-                    
-                    for sheet in ['Reguler', 'Poleks']:
-                        if sheet in excel_data.sheet_names:
-                            # Reset stream lagi
-                            file_stream.seek(0)
-                            df_sheet = pd.read_excel(file_stream, sheet_name=sheet)
-                            st.write(f"**Sheet {sheet}:** {len(df_sheet)} baris")
-                            st.dataframe(df_sheet.head(3), width='stretch')
-                except Exception as e:
-                    st.warning(f"Tidak bisa preview file: {e}")
-            
-            # ======================================================
-            # PROSES DATA
-            # ======================================================
-            if st.button("🚀 Proses Jadwal", type="primary", width='stretch'):
-                with st.spinner("Memproses data... Mohon tunggu"):
-                    try:
-                        # Debug info
-                        st.write("🔄 **Memulai proses...**")
-                        
-                        # Reset stream untuk proses
-                        file_stream.seek(0)
-                        
-                        # Proses dengan scheduler
-                        st.write("1. Membersihkan data...")
-                        grid_df, slot_strings, errors = scheduler.process_dataframe(file_stream)
-                        
-                        # Debug output
-                        st.write(f"2. Hasil: grid_df={'Ada' if grid_df is not None else 'Tidak'}, "
-                               f"slots={len(slot_strings) if slot_strings else 0}, "
-                               f"errors={len(errors) if errors else 0}")
-                        
-                        if grid_df is not None:
-                            # Simpan ke session state
-                            st.session_state["processed_data"] = grid_df
-                            st.session_state["slot_strings"] = slot_strings
-                            st.session_state["uploaded_file_bytes"] = file_bytes  # Simpan bytes, bukan stream
-                            
-                            st.success(f"✅ Data berhasil diproses! ({len(grid_df)} baris, {len(slot_strings)} slot waktu)")
-                            
-                            # Preview hasil
-                            with st.expander("📋 Preview Hasil Proses"):
-                                st.write(f"**Dimensi data:** {grid_df.shape[0]} baris × {grid_df.shape[1]} kolom")
-                                st.dataframe(grid_df.head(), width='stretch')
-                            
-                            # Tampilkan errors/warnings
-                            if errors:
-                                st.warning(f"⚠️ **{len(errors)} peringatan selama pemrosesan:**")
-                                for error in errors[:5]:
-                                    st.write(f"- {error}")
-                                if len(errors) > 5:
-                                    st.write(f"- ... dan {len(errors) - 5} peringatan lainnya")
-                            
-                            # ======================================================
-                            # DOWNLOAD HASIL
-                            # ======================================================
-                            st.subheader("💾 Download Hasil")
-                            
-                            # Tampilkan tombol download hanya jika proses berhasil
-                            if grid_df is not None and slot_strings:
-                                col1, col2 = st.columns(2)
-                                
-                                with col1:
-                                    if st.button("📥 Download Excel Hasil", width='stretch'):
-                                        with st.spinner("Membuat file Excel..."):
-                                            try:
-                                                # Buat stream baru dari bytes yang disimpan
-                                                new_stream = io.BytesIO(st.session_state["uploaded_file_bytes"])
-                                                
-                                                output_buffer = writer.write(
-                                                    source_file=new_stream,
-                                                    df_grid=grid_df,
-                                                    slot_str=slot_strings
-                                                )
-                                                
-                                                # Tampilkan download button
-                                                st.download_button(
-                                                    label="⬇️ Klik untuk download file Excel",
-                                                    data=output_buffer,
-                                                    file_name="jadwal_hasil.xlsx",
-                                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                                    width='stretch'
-                                                )
-                                            except Exception as e:
-                                                st.error(f"❌ Gagal membuat file Excel: {str(e)}")
-                                                st.code(traceback.format_exc())
-                                
-                                with col2:
-                                    if st.button("📄 Download Template", width='stretch'):
-                                        try:
-                                            template_buffer = writer.generate_template(slot_strings)
-                                            st.download_button(
-                                                label="⬇️ Download Template",
-                                                data=template_buffer,
-                                                file_name="template_jadwal.xlsx",
-                                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                                width='stretch'
-                                            )
-                                        except Exception as e:
-                                            st.error(f"❌ Gagal membuat template: {str(e)}")
-                        
-                        else:
-                            st.error("❌ Gagal memproses data")
-                            if errors:
-                                st.error("**Detail error:**")
-                                for error in errors:
-                                    st.write(f"- {error}")
-                            
-                    except Exception as e:
-                        st.error(f"❌ Error saat memproses: {str(e)}")
-                        st.code(traceback.format_exc())
-                        
+            else:
+                raise ValueError(f"Unsupported input type: {type(df_or_file)}")
+                
         except Exception as e:
-            st.error(f"❌ Error membaca file: {str(e)}")
-            st.code(traceback.format_exc())
+            print(f"❌ Error in DataCleaner.clean(): {e}")
+            print(traceback.format_exc())
+            raise
     
-    else:
-        st.info("📤 Silakan upload file Excel dengan sheet Reguler dan Poleks")
-        
-        # ======================================================
-        # TEMPLATE & CONTOH
-        # ======================================================
-        with st.expander("ℹ️ Panduan Format File"):
-            st.markdown("""
-            **Format file Excel harus memiliki:**
+    def _clean_from_bytesio(self, bytes_io: io.BytesIO) -> pd.DataFrame:
+        """Clean data dari BytesIO"""
+        try:
+            # Reset stream position
+            bytes_io.seek(0)
             
-            1. **Sheet 'Reguler'** - Berisi jadwal reguler
-            2. **Sheet 'Poleks'** - Berisi jadwal poleks
+            # Baca sheet names
+            excel_file = pd.ExcelFile(bytes_io)
+            sheet_names = excel_file.sheet_names
+            print(f"   Excel sheets found: {sheet_names}")
             
-            **Kolom yang harus ada di setiap sheet:**
-            - `Nama Dokter` - Nama lengkap dokter
-            - `Poli Asal` - Nama poli
-            - `Jenis Poli` - "Reguler" atau "Poleks"
-            - `Senin` - Format: "07.30-10.00" atau "07:30-10:00"
-            - `Selasa` - Format sama
-            - `Rabu` - Format sama
-            - `Kamis` - Format sama
-            - `Jum'at` - Format sama
+            # Gabungkan sheet Reguler dan Poleks
+            all_data = []
             
-            **Contoh data:**
-            | Nama Dokter | Poli Asal | Jenis Poli | Senin | Selasa |
-            |-------------|-----------|------------|-------|--------|
-            | dr. Contoh | Poli Anak | Reguler | 08.00-10.00 | 09.00-11.00 |
-            """)
+            for sheet in ['Reguler', 'Poleks']:
+                if sheet in sheet_names:
+                    print(f"   Reading sheet: {sheet}")
+                    df = pd.read_excel(excel_file, sheet_name=sheet)
+                    df['Jenis Poli'] = sheet  # Tambahkan kolom jenis
+                    all_data.append(df)
+                else:
+                    print(f"   ⚠️ Sheet '{sheet}' not found")
+            
+            if not all_data:
+                # Fallback: baca sheet pertama
+                print("   No Reguler/Poleks sheets, reading first sheet...")
+                df = pd.read_excel(excel_file, sheet_name=0)
+                all_data.append(df)
+            
+            # Gabungkan semua data
+            combined_df = pd.concat(all_data, ignore_index=True)
+            print(f"   Combined data: {len(combined_df)} rows")
+            
+            # Clean dataframe
+            return self._clean_dataframe(combined_df)
+            
+        except Exception as e:
+            print(f"❌ Error reading from BytesIO: {e}")
+            print(traceback.format_exc())
+            raise
     
-    # ======================================================
-    # DATA YANG SUDAH DIPROSES
-    # ======================================================
-    if "processed_data" in st.session_state and st.session_state["processed_data"] is not None:
-        st.divider()
-        st.subheader("📊 Data Hasil Proses")
+    def _clean_from_excel(self, file_path: str) -> pd.DataFrame:
+        """Clean data dari file Excel"""
+        try:
+            excel_file = pd.ExcelFile(file_path)
+            sheet_names = excel_file.sheet_names
+            print(f"   Excel sheets: {sheet_names}")
+            
+            all_data = []
+            
+            for sheet in ['Reguler', 'Poleks']:
+                if sheet in sheet_names:
+                    df = pd.read_excel(excel_file, sheet_name=sheet)
+                    df['Jenis Poli'] = sheet
+                    all_data.append(df)
+            
+            if not all_data:
+                df = pd.read_excel(excel_file, sheet_name=0)
+                all_data.append(df)
+            
+            combined_df = pd.concat(all_data, ignore_index=True)
+            return self._clean_dataframe(combined_df)
+            
+        except Exception as e:
+            print(f"❌ Error reading Excel file: {e}")
+            raise
+    
+    def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean DataFrame yang sudah digabungkan"""
+        print(f"   Cleaning DataFrame with {len(df)} rows, {len(df.columns)} columns")
         
-        df_processed = st.session_state["processed_data"]
-        st.write(f"📈 **Statistik:** {len(df_processed)} baris data tersimpan")
+        if df.empty:
+            print("   ⚠️ DataFrame is empty, returning empty DataFrame")
+            return df
         
-        # Tombol download langsung jika data sudah ada
-        if st.button("📥 Download Hasil Sekarang", width='stretch'):
-            if "uploaded_file_bytes" in st.session_state and "slot_strings" in st.session_state:
-                with st.spinner("Membuat file Excel..."):
-                    try:
-                        grid_df = st.session_state["processed_data"]
-                        slot_strings = st.session_state["slot_strings"]
-                        
-                        # Buat stream baru
-                        new_stream = io.BytesIO(st.session_state["uploaded_file_bytes"])
-                        
-                        output_buffer = writer.write(
-                            source_file=new_stream,
-                            df_grid=grid_df,
-                            slot_str=slot_strings
-                        )
-                        
-                        st.download_button(
-                            label="⬇️ Klik untuk download",
-                            data=output_buffer,
-                            file_name="jadwal_hasil.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            width='stretch'
-                        )
-                    except Exception as e:
-                        st.error(f"❌ Gagal membuat file: {str(e)}")
+        print(f"   Original columns: {list(df.columns)}")
         
-        if st.button("🔄 Reset Data", width='stretch'):
-            for key in ["uploaded_file_bytes", "processed_data", "slot_strings"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
+        # Buat copy untuk menghindari warning
+        df_clean = df.copy()
+        
+        # 1. Normalisasi nama kolom (jika ada)
+        if hasattr(df_clean, 'columns'):
+            df_clean.columns = [str(col).strip() for col in df_clean.columns]
+        else:
+            print("   ⚠️ DataFrame has no columns attribute")
+            return pd.DataFrame()
+        
+        # 2. Mapping nama kolom
+        column_mapping = {
+            'Nama Dokter': 'Nama Dokter',
+            'nama dokter': 'Nama Dokter',
+            'Dokter': 'Nama Dokter',
+            'Poli Asal': 'Poli Asal',
+            'poli asal': 'Poli Asal',
+            'Poli': 'Poli Asal',
+            'Jenis Poli': 'Jenis Poli',
+            'jenis poli': 'Jenis Poli',
+            'Jenis': 'Jenis Poli',
+            'Senin': 'Senin',
+            'Selasa': 'Selasa',
+            'Rabu': 'Rabu',
+            'Kamis': 'Kamis',
+            "Jum'at": "Jum'at",
+            'Jumat': "Jum'at",
+            'Sabtu': 'Sabtu'
+        }
+        
+        # Rename kolom
+        renamed_count = 0
+        for old_name, new_name in column_mapping.items():
+            if old_name in df_clean.columns and new_name not in df_clean.columns:
+                df_clean.rename(columns={old_name: new_name}, inplace=True)
+                renamed_count += 1
+                print(f"   Renamed column: {old_name} -> {new_name}")
+        
+        print(f"   Total columns renamed: {renamed_count}")
+        
+        # 3. Drop kolom yang tidak perlu
+        cols_to_drop = ['No', 'Unnamed: 0', 'Unnamed: 1', 'Unnamed: 2', 'Unnamed: 3', 'Unnamed: 4']
+        dropped_count = 0
+        for col in cols_to_drop:
+            if col in df_clean.columns:
+                df_clean.drop(columns=[col], inplace=True)
+                dropped_count += 1
+                print(f"   Dropped column: {col}")
+        
+        print(f"   Total columns dropped: {dropped_count}")
+        
+        # 4. Validasi kolom required
+        required_cols = ['Nama Dokter', 'Poli Asal']
+        missing_cols = [col for col in required_cols if col not in df_clean.columns]
+        
+        if missing_cols:
+            print(f"   ❌ Missing required columns: {missing_cols}")
+            print(f"   Available columns: {list(df_clean.columns)}")
+            raise ValueError(f"Missing required columns: {missing_cols}")
+        
+        print(f"   ✓ All required columns present")
+        
+        # 5. Clean data per kolom
+        # Nama Dokter
+        if 'Nama Dokter' in df_clean.columns:
+            df_clean['Nama Dokter'] = df_clean['Nama Dokter'].astype(str).str.strip()
+            # Remove empty doctor names
+            initial_count = len(df_clean)
+            mask = (df_clean['Nama Dokter'].isna()) | (df_clean['Nama Dokter'].isin(['nan', 'NaN', 'None', '']))
+            df_clean = df_clean[~mask].reset_index(drop=True)
+            print(f"   Removed {initial_count - len(df_clean)} rows with empty doctor names")
+        
+        # Poli Asal
+        if 'Poli Asal' in df_clean.columns:
+            df_clean['Poli Asal'] = df_clean['Poli Asal'].astype(str).str.strip()
+        
+        # Jenis Poli (jika ada)
+        if 'Jenis Poli' in df_clean.columns:
+            df_clean['Jenis Poli'] = df_clean['Jenis Poli'].astype(str).str.strip()
+            # Normalisasi nilai
+            df_clean['Jenis Poli'] = df_clean['Jenis Poli'].replace({
+                'reguler': 'Reguler',
+                'poleks': 'Poleks',
+                'Polek': 'Poleks',
+                'REGULER': 'Reguler',
+                'POLEKS': 'Poleks',
+                'Reguler': 'Reguler',
+                'Poleks': 'Poleks'
+            })
+        else:
+            # Jika tidak ada kolom Jenis Poli, tambahkan default
+            df_clean['Jenis Poli'] = 'Reguler'
+            print(f"   Added default 'Jenis Poli' column")
+        
+        # 6. Clean kolom hari
+        hari_cols = ['Senin', 'Selasa', 'Rabu', 'Kamis', "Jum'at", 'Sabtu']
+        hari_cleaned = {}
+        
+        for hari in hari_cols:
+            if hari in df_clean.columns:
+                # Konversi ke string dan clean
+                df_clean[hari] = df_clean[hari].astype(str).str.strip()
+                # Replace nilai kosong dengan None
+                df_clean[hari] = df_clean[hari].replace(['nan', 'NaN', 'NaT', 'None', ''], None)
+                non_empty = df_clean[hari].notna().sum()
+                hari_cleaned[hari] = non_empty
+                print(f"   Cleaned column {hari}: {non_empty} non-empty values")
+        
+        # 7. Drop baris yang semua kolom harinya kosong
+        hari_cols_exist = [h for h in hari_cols if h in df_clean.columns]
+        if hari_cols_exist:
+            initial_count = len(df_clean)
+            mask = df_clean[hari_cols_exist].isnull().all(axis=1)
+            df_clean = df_clean[~mask].reset_index(drop=True)
+            removed_count = initial_count - len(df_clean)
+            if removed_count > 0:
+                print(f"   Removed {removed_count} rows with all empty days")
+        
+        # 8. Reset index
+        df_clean = df_clean.reset_index(drop=True)
+        
+        print(f"   ✅ Cleaning complete: {len(df_clean)} rows remaining")
+        print(f"   Final columns: {list(df_clean.columns)}")
+        
+        # Show sample of cleaned data
+        if len(df_clean) > 0:
+            print(f"   Sample cleaned data (first row):")
+            sample = df_clean.iloc[0]
+            for col in df_clean.columns:
+                if col in sample:
+                    print(f"     {col}: {sample[col]}")
+        
+        return df_clean
+    
+    def validate_time_format(self, time_str: str) -> bool:
+        """
+        Validasi format waktu
+        
+        Args:
+            time_str: String waktu untuk divalidasi
+            
+        Returns:
+            True jika format valid
+        """
+        if pd.isna(time_str) or not isinstance(time_str, str):
+            return False
+        
+        time_str = str(time_str).strip()
+        if not time_str or time_str.lower() in ['nan', 'null', 'none', '']:
+            return True  # Empty is valid
+        
+        # Pattern untuk format: 07.30-10.00, 07:30-10:00, 7.30-10.00, dll.
+        pattern = r'^\s*\d{1,2}[:\.]\d{2}\s*[-–]\s*\d{1,2}[:\.]\d{2}\s*$'
+        return bool(re.match(pattern, time_str))
+    
+    def get_available_sheets(self, file_path: str) -> List[str]:
+        """
+        Dapatkan list sheet yang tersedia di file Excel
+        
+        Args:
+            file_path: Path ke file Excel
+            
+        Returns:
+            List nama sheet
+        """
+        try:
+            xls = pd.ExcelFile(file_path)
+            return xls.sheet_names
+        except Exception as e:
+            print(f"❌ Error reading sheets: {e}")
+            return []
+    
+    def get_data_summary(self, df: pd.DataFrame) -> dict:
+        """
+        Dapatkan summary dari data yang sudah dibersihkan
+        
+        Args:
+            df: DataFrame yang sudah dibersihkan
+            
+        Returns:
+            Dictionary berisi summary statistik
+        """
+        summary = {
+            'total_rows': len(df),
+            'total_doctors': 0,
+            'total_poli': 0,
+            'non_empty_days': {}
+        }
+        
+        if not df.empty:
+            if 'Nama Dokter' in df.columns:
+                summary['total_doctors'] = df['Nama Dokter'].nunique()
+            
+            if 'Poli Asal' in df.columns:
+                summary['total_poli'] = df['Poli Asal'].nunique()
+            
+            # Hitung data non-empty per hari
+            hari_cols = ['Senin', 'Selasa', 'Rabu', 'Kamis', "Jum'at", 'Sabtu']
+            for hari in hari_cols:
+                if hari in df.columns:
+                    non_empty = df[hari].notna().sum()
+                    summary['non_empty_days'][hari] = non_empty
+        
+        return summary
+
+
+# ============================================================
+# FUNGSI UTILITY (untuk backward compatibility)
+# ============================================================
+
+def clean_data(df_or_file):
+    """
+    Fungsi utility untuk backward compatibility
+    
+    Args:
+        df_or_file: Input data
+        
+    Returns:
+        DataFrame yang sudah dibersihkan
+    """
+    cleaner = DataCleaner()
+    return cleaner.clean(df_or_file)
+
+
+def validate_excel_file(file_path: str) -> bool:
+    """
+    Validasi file Excel
+    
+    Args:
+        file_path: Path ke file Excel
+        
+    Returns:
+        True jika file valid
+    """
+    try:
+        cleaner = DataCleaner()
+        df = cleaner._clean_from_excel(file_path)
+        return not df.empty
+    except:
+        return False
+
+
+# ============================================================
+# MODULE EXPORTS
+# ============================================================
+
+__all__ = ['DataCleaner', 'clean_data', 'validate_excel_file']
