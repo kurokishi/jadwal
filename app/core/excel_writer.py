@@ -800,192 +800,348 @@ class ExcelWriter:
         
         return ws
     
-    def _create_kanban_sheet(self, wb, df_grid, slot_str, kanban_data=None):
-        """Buat sheet Kanban Board"""
-        if "Kanban Board" in wb.sheetnames:
-            del wb["Kanban Board"]
-        
-        ws = wb.create_sheet("Kanban Board")
-        
-        # Title
-        ws.merge_cells("A1:F1")
-        title_cell = ws["A1"]
-        title_cell.value = "📌 KANBAN BOARD - MANAJEMEN JADWAL DOKTER"
-        title_cell.font = Font(bold=True, size=16, color="FFFFFF")
-        title_cell.fill = self.fill_kanban_header
-        title_cell.alignment = Alignment(horizontal="center", vertical="center")
-        
-        # Jika tidak ada kanban_data, buat default atau ambil dari analisis
-        if not kanban_data:
-            kanban_data = self._generate_kanban_from_analysis(df_grid, slot_str)
-        
-        # Define kanban columns
-        kanban_columns = {
-            "A3:E30": "⚠️ MASALAH JADWAL",
-            "G3:K30": "🔧 PERLU PENYESUAIAN",
-            "M3:Q30": "⏳ DALAM PROSES",
-            "S3:W30": "✅ OPTIMAL"
-        }
-        
-        # Write kanban data
-        row_start = 3
-        
-        for col_range, column_name in kanban_columns.items():
-            # Write column header
-            start_col = col_range.split(":")[0][0]  # Get first column letter
-            header_row = row_start
-            
-            ws.merge_cells(f"{start_col}{header_row}:{chr(ord(start_col) + 4)}{header_row}")
-            header_cell = ws[f"{start_col}{header_row}"]
-            header_cell.value = column_name
-            header_cell.font = Font(bold=True, size=12)
-            header_cell.fill = PatternFill("solid", fgColor="D9D9D9")
-            header_cell.alignment = Alignment(horizontal="center", vertical="center")
-            header_cell.border = self.thin_border
-            
-            # Get cards for this column
-            cards = kanban_data.get(column_name, [])
-            
-            # Write cards
-            card_row = header_row + 1
-            for card in cards:
-                if card_row > header_row + 25:  # Max 25 cards per column
-                    break
-                
-                # Card container (merge 5 cells vertically)
-                start_cell = f"{start_col}{card_row}"
-                end_cell = f"{chr(ord(start_col) + 4)}{card_row + 3}"
-                ws.merge_cells(f"{start_cell}:{end_cell}")
-                
-                card_cell = ws[start_cell]
-                card_cell.value = self._format_kanban_card(card)
-                card_cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
-                card_cell.border = self.thin_border
-                
-                # Apply priority color
-                priority = card.get("priority", "Medium")
-                if priority == "High":
-                    card_cell.fill = self.fill_high
-                elif priority == "Medium":
-                    card_cell.fill = self.fill_medium
-                else:
-                    card_cell.fill = self.fill_low
-                
-                # Apply label color
-                label = card.get("label", "")
-                label_fill = self._get_label_fill(label)
-                if label_fill:
-                    # Create a small label indicator in top right
-                    label_cell = ws[f"{chr(ord(start_col) + 3)}{card_row}"]
-                    label_cell.value = f" [{label}]"
-                    label_cell.font = Font(size=8, bold=True, color="FFFFFF")
-                    label_cell.fill = label_fill
-                    label_cell.alignment = Alignment(horizontal="right", vertical="top")
-                
-                card_row += 4
-        
-        # Statistics section
-        stats_row = 35
-        ws.merge_cells(f"A{stats_row}:F{stats_row}")
-        stats_title = ws[f"A{stats_row}"]
-        stats_title.value = "📊 STATISTIK KANBAN"
-        stats_title.font = Font(bold=True, size=12)
-        stats_title.alignment = Alignment(horizontal="center", vertical="center")
-        
-        # Calculate statistics
-        total_cards = 0
-        high_priority = 0
-        
-        for column_name, cards in kanban_data.items():
-            total_cards += len(cards)
-            high_priority += sum(1 for card in cards if card.get("priority") == "High")
-        
-        # Write statistics
-        ws.append([])  # Empty row
-        
-        stats_data = [
-            ["Total Kartu", total_cards],
-            ["Prioritas Tinggi", high_priority],
-            ["Masalah Jadwal", len(kanban_data.get("⚠️ MASALAH JADWAL", []))],
-            ["Perlu Penyesuaian", len(kanban_data.get("🔧 PERLU PENYESUAIAN", []))],
-            ["Dalam Proses", len(kanban_data.get("⏳ DALAM PROSES", []))],
-            ["Optimal", len(kanban_data.get("✅ OPTIMAL", []))]
-        ]
-        
-        for i, (label, value) in enumerate(stats_data):
-            ws.append([label, value])
-        
-        # Style statistics
-        for row in range(stats_row + 2, stats_row + 2 + len(stats_data)):
-            for col in range(1, 3):
-                cell = ws.cell(row=row, column=col)
-                cell.border = self.thin_border
-                if col == 1:
-                    cell.font = Font(bold=True)
-                    cell.alignment = self.align_left
-                else:
-                    cell.alignment = self.align_center
-        
-        # Instructions section
-        instr_row = stats_row + 2 + len(stats_data) + 2
-        ws.merge_cells(f"A{instr_row}:F{instr_row}")
-        instr_title = ws[f"A{instr_row}"]
-        instr_title.value = "📋 INSTRUKSI"
-        instr_title.font = Font(bold=True, size=12)
-        instr_title.alignment = Alignment(horizontal="center", vertical="center")
-        
-        instructions = [
-            "1. KANBAN COLORS:",
-            "   • Merah = Prioritas Tinggi",
-            "   • Kuning = Prioritas Sedang",
-            "   • Hijau = Prioritas Rendah",
-            "",
-            "2. LABEL COLORS:",
-            "   • Overload = Merah Muda",
-            "   • Konflik = Oranye",
-            "   • Kosong = Biru Muda",
-            "   • Distribusi = Hijau Muda",
-            "   • Beban = Ungu Muda",
-            "   • Review = Kuning Muda",
-            "   • Optimal = Cyan",
-            "",
-            "3. KOLOM:",
-            "   • ⚠️ MASALAH JADWAL = Masalah kritis yang perlu segera ditangani",
-            "   • 🔧 PERLU PENYESUAIAN = Jadwal yang perlu dioptimalkan",
-            "   • ⏳ DALAM PROSES = Masalah sedang ditangani",
-            "   • ✅ OPTIMAL = Jadwal yang sudah optimal",
-            "",
-            "Generated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ]
-        
-        for i, line in enumerate(instructions):
-            ws.cell(row=instr_row + 1 + i, column=1, value=line)
-        
-        # Adjust column widths
-        ws.column_dimensions['A'].width = 20
-        ws.column_dimensions['B'].width = 15
-        ws.column_dimensions['C'].width = 5
-        ws.column_dimensions['D'].width = 5
-        ws.column_dimensions['E'].width = 5
-        ws.column_dimensions['F'].width = 5
-        ws.column_dimensions['G'].width = 20
-        ws.column_dimensions['H'].width = 15
-        ws.column_dimensions['I'].width = 5
-        ws.column_dimensions['J'].width = 5
-        ws.column_dimensions['K'].width = 5
-        ws.column_dimensions['M'].width = 20
-        ws.column_dimensions['N'].width = 15
-        ws.column_dimensions['O'].width = 5
-        ws.column_dimensions['P'].width = 5
-        ws.column_dimensions['Q'].width = 5
-        ws.column_dimensions['S'].width = 20
-        ws.column_dimensions['T'].width = 15
-        ws.column_dimensions['U'].width = 5
-        ws.column_dimensions['V'].width = 5
-        ws.column_dimensions['W'].width = 5
-        
-        return ws
+def _create_kanban_sheet(self, wb, df_grid, slot_str, kanban_data=None):
+    """Buat sheet Kanban Board sebagai laporan text sederhana"""
+    if "Kanban Board" in wb.sheetnames:
+        del wb["Kanban Board"]
     
+    ws = wb.create_sheet("Kanban Board")
+    
+    # Title
+    ws.merge_cells("A1:F1")
+    title_cell = ws["A1"]
+    title_cell.value = "📌 LAPORAN KANBAN BOARD - MANAJEMEN JADWAL DOKTER"
+    title_cell.font = Font(bold=True, size=14, color="FFFFFF")
+    title_cell.fill = PatternFill("solid", fgColor="7030A0")
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    
+    # Timestamp
+    ws.append([])  # Empty row
+    ws.append(["Dibuat pada", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    ws.append(["Lokasi File", "Aplikasi Jadwal Dokter > Tab Kanban"])
+    ws.append([])
+    
+    # Jika tidak ada kanban_data, buat default
+    if not kanban_data:
+        kanban_data = self._generate_kanban_from_analysis(df_grid, slot_str)
+    
+    # Define kanban columns order
+    kanban_columns_order = [
+        "⚠️ MASALAH JADWAL",
+        "🔧 PERLU PENYESUAIAN", 
+        "⏳ DALAM PROSES",
+        "✅ OPTIMAL"
+    ]
+    
+    row = 5  # Start row for content
+    
+    # Write each kanban column
+    for column_name in kanban_columns_order:
+        # Column header
+        ws.merge_cells(f"A{row}:F{row}")
+        header_cell = ws[f"A{row}"]
+        header_cell.value = column_name
+        header_cell.font = Font(bold=True, size=12, color="FFFFFF")
+        header_cell.fill = PatternFill("solid", fgColor="366092")
+        header_cell.alignment = Alignment(horizontal="left", vertical="center")
+        header_cell.border = self.thin_border
+        
+        # Get cards for this column
+        cards = kanban_data.get(column_name, [])
+        card_count = len(cards)
+        
+        row += 1
+        
+        # If no cards
+        if card_count == 0:
+            ws.merge_cells(f"A{row}:F{row}")
+            empty_cell = ws[f"A{row}"]
+            empty_cell.value = "   Tidak ada kartu"
+            empty_cell.font = Font(italic=True, color="666666")
+            empty_cell.alignment = Alignment(horizontal="left", vertical="center")
+            row += 2
+            continue
+        
+        # Write each card
+        for i, card in enumerate(cards, 1):
+            # Card text
+            text = card.get("text", "")
+            label = card.get("label", "")
+            priority = card.get("priority", "Medium")
+            
+            # Format card display
+            card_display = []
+            card_display.append(f"{i}. {text}")
+            card_display.append(f"   • Label: {label}")
+            card_display.append(f"   • Prioritas: {priority}")
+            
+            # Add any data details if available
+            if "data" in card:
+                data = card["data"]
+                if "type" in data:
+                    if data["type"] == "overload":
+                        card_display.append(f"   • Detail: {data['hari']} {data['slot']}, {data['count']} Poleks (batas {data['max']})")
+                    elif data["type"] == "conflict":
+                        card_display.append(f"   • Detail: {data['dokter']} - {data['hari']}, {len(data['conflicts'])} konflik")
+                    elif data["type"] == "empty":
+                        card_display.append(f"   • Detail: {data['poli']} - {data['hari']}, {data['empty_slots']} slot kosong")
+                    elif data["type"] == "distribution":
+                        card_display.append(f"   • Detail: {data['poli']}, {data['morning_pct']:.0f}% pagi, {data['afternoon_pct']:.0f}% sore")
+                    elif data["type"] == "optimal":
+                        card_display.append(f"   • Detail: {data['hari']} {data['slot']}, {data['doctor_count']} dokter")
+            
+            # Write each line of the card
+            for line in card_display:
+                ws.merge_cells(f"A{row}:F{row}")
+                cell = ws[f"A{row}"]
+                cell.value = line
+                
+                # Style based on priority
+                if priority == "High":
+                    cell.font = Font(bold=True, color="FF0000")
+                elif priority == "Medium":
+                    cell.font = Font(color="FF9900")
+                else:  # Low
+                    cell.font = Font(color="00AA00")
+                
+                if line.startswith("   •"):
+                    cell.font = Font(size=9, color="666666")
+                
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                row += 1
+            
+            # Add small gap between cards
+            row += 1
+        
+        # Add gap between columns
+        row += 1
+    
+    # Statistics section
+    stats_row = row + 2
+    ws.merge_cells(f"A{stats_row}:F{stats_row}")
+    stats_title = ws[f"A{stats_row}"]
+    stats_title.value = "📊 STATISTIK KANBAN"
+    stats_title.font = Font(bold=True, size=12)
+    stats_title.alignment = Alignment(horizontal="center", vertical="center")
+    
+    # Calculate statistics
+    total_cards = 0
+    high_priority = 0
+    medium_priority = 0
+    low_priority = 0
+    
+    for column_name, cards in kanban_data.items():
+        total_cards += len(cards)
+        for card in cards:
+            priority = card.get("priority", "Medium")
+            if priority == "High":
+                high_priority += 1
+            elif priority == "Medium":
+                medium_priority += 1
+            else:
+                low_priority += 1
+    
+    # Write statistics in table format
+    stats_row += 2
+    
+    # Table header
+    ws.merge_cells(f"A{stats_row}:B{stats_row}")
+    header1 = ws[f"A{stats_row}"]
+    header1.value = "METRIK"
+    header1.font = Font(bold=True)
+    header1.fill = PatternFill("solid", fgColor="D9E1F2")
+    header1.alignment = Alignment(horizontal="center", vertical="center")
+    header1.border = self.thin_border
+    
+    ws.merge_cells(f"C{stats_row}:D{stats_row}")
+    header2 = ws[f"C{stats_row}"]
+    header2.value = "JUMLAH"
+    header2.font = Font(bold=True)
+    header2.fill = PatternFill("solid", fgColor="D9E1F2")
+    header2.alignment = Alignment(horizontal="center", vertical="center")
+    header2.border = self.thin_border
+    
+    ws.merge_cells(f"E{stats_row}:F{stats_row}")
+    header3 = ws[f"E{stats_row}"]
+    header3.value = "PERSENTASE"
+    header3.font = Font(bold=True)
+    header3.fill = PatternFill("solid", fgColor="D9E1F2")
+    header3.alignment = Alignment(horizontal="center", vertical="center")
+    header3.border = self.thin_border
+    
+    # Data rows
+    stats_data = [
+        ["Total Kartu", total_cards, f"{100:.1f}%" if total_cards > 0 else "0%"],
+        ["Prioritas Tinggi", high_priority, f"{(high_priority/total_cards*100):.1f}%" if total_cards > 0 else "0%"],
+        ["Prioritas Sedang", medium_priority, f"{(medium_priority/total_cards*100):.1f}%" if total_cards > 0 else "0%"],
+        ["Prioritas Rendah", low_priority, f"{(low_priority/total_cards*100):.1f}%" if total_cards > 0 else "0%"],
+    ]
+    
+    for i, (label, value, pct) in enumerate(stats_data):
+        row_num = stats_row + 1 + i
+        
+        # Metric
+        ws.merge_cells(f"A{row_num}:B{row_num}")
+        cell1 = ws[f"A{row_num}"]
+        cell1.value = label
+        cell1.alignment = Alignment(horizontal="left", vertical="center")
+        cell1.border = self.thin_border
+        
+        # Count
+        ws.merge_cells(f"C{row_num}:D{row_num}")
+        cell2 = ws[f"C{row_num}"]
+        cell2.value = value
+        cell2.alignment = Alignment(horizontal="center", vertical="center")
+        cell2.border = self.thin_border
+        
+        # Percentage
+        ws.merge_cells(f"E{row_num}:F{row_num}")
+        cell3 = ws[f"E{row_num}"]
+        cell3.value = pct
+        cell3.alignment = Alignment(horizontal="center", vertical="center")
+        cell3.border = self.thin_border
+        
+        # Highlight important rows
+        if label == "Total Kartu":
+            cell1.font = Font(bold=True)
+            cell2.font = Font(bold=True)
+            cell3.font = Font(bold=True)
+    
+    # Column distribution
+    dist_row = stats_row + len(stats_data) + 3
+    
+    ws.merge_cells(f"A{dist_row}:F{dist_row}")
+    dist_title = ws[f"A{dist_row}"]
+    dist_title.value = "📋 DISTRIBUSI PER KOLOM"
+    dist_title.font = Font(bold=True, size=11)
+    dist_title.alignment = Alignment(horizontal="center", vertical="center")
+    
+    dist_row += 1
+    
+    # Table header for column distribution
+    ws.merge_cells(f"A{dist_row}:B{dist_row}")
+    dheader1 = ws[f"A{dist_row}"]
+    dheader1.value = "KOLOM"
+    dheader1.font = Font(bold=True)
+    dheader1.fill = PatternFill("solid", fgColor="F2F2F2")
+    dheader1.alignment = Alignment(horizontal="left", vertical="center")
+    dheader1.border = self.thin_border
+    
+    ws.merge_cells(f"C{dist_row}:D{dist_row}")
+    dheader2 = ws[f"C{dist_row}"]
+    dheader2.value = "JUMLAH KARTU"
+    dheader2.font = Font(bold=True)
+    dheader2.fill = PatternFill("solid", fgColor="F2F2F2")
+    dheader2.alignment = Alignment(horizontal="center", vertical="center")
+    dheader2.border = self.thin_border
+    
+    ws.merge_cells(f"E{dist_row}:F{dist_row}")
+    dheader3 = ws[f"E{dist_row}"]
+    dheader3.value = "% DARI TOTAL"
+    dheader3.font = Font(bold=True)
+    dheader3.fill = PatternFill("solid", fgColor="F2F2F2")
+    dheader3.alignment = Alignment(horizontal="center", vertical="center")
+    dheader3.border = self.thin_border
+    
+    # Column distribution data
+    for i, column_name in enumerate(kanban_columns_order):
+        row_num = dist_row + 1 + i
+        cards = kanban_data.get(column_name, [])
+        count = len(cards)
+        pct = f"{(count/total_cards*100):.1f}%" if total_cards > 0 else "0%"
+        
+        # Column name
+        ws.merge_cells(f"A{row_num}:B{row_num}")
+        cell1 = ws[f"A{row_num}"]
+        cell1.value = column_name
+        cell1.alignment = Alignment(horizontal="left", vertical="center")
+        cell1.border = self.thin_border
+        
+        # Count
+        ws.merge_cells(f"C{row_num}:D{row_num}")
+        cell2 = ws[f"C{row_num}"]
+        cell2.value = count
+        cell2.alignment = Alignment(horizontal="center", vertical="center")
+        cell2.border = self.thin_border
+        
+        # Percentage
+        ws.merge_cells(f"E{row_num}:F{row_num}")
+        cell3 = ws[f"E{row_num}"]
+        cell3.value = pct
+        cell3.alignment = Alignment(horizontal="center", vertical="center")
+        cell3.border = self.thin_border
+    
+    # Summary and recommendations
+    summary_row = dist_row + len(kanban_columns_order) + 3
+    
+    ws.merge_cells(f"A{summary_row}:F{summary_row}")
+    summary_title = ws[f"A{summary_row}"]
+    summary_title.value = "💡 REKOMENDASI & TINDAK LANJUT"
+    summary_title.font = Font(bold=True, size=12)
+    summary_title.alignment = Alignment(horizontal="center", vertical="center")
+    
+    summary_row += 1
+    
+    recommendations = []
+    
+    # Analyze for recommendations
+    masalah_cards = kanban_data.get("⚠️ MASALAH JADWAL", [])
+    if masalah_cards:
+        high_priority_count = sum(1 for card in masalah_cards if card.get("priority") == "High")
+        if high_priority_count > 0:
+            recommendations.append(f"• Ada {high_priority_count} masalah prioritas TINGGI yang perlu segera ditangani")
+        
+        overload_count = sum(1 for card in masalah_cards if card.get("label") == "Overload")
+        if overload_count > 0:
+            recommendations.append(f"• {overload_count} slot Poleks melebihi batas maksimal ({self.max_e})")
+        
+        conflict_count = sum(1 for card in masalah_cards if card.get("label") == "Konflik")
+        if conflict_count > 0:
+            recommendations.append(f"• {conflict_count} konflik jadwal dokter ditemukan")
+    
+    penyesuaian_cards = kanban_data.get("🔧 PERLU PENYESUAIAN", [])
+    if penyesuaian_cards:
+        recommendations.append(f"• {len(penyesuaian_cards)} item perlu penyesuaian untuk optimalisasi")
+    
+    optimal_cards = kanban_data.get("✅ OPTIMAL", [])
+    if optimal_cards:
+        recommendations.append(f"• {len(optimal_cards)} pola jadwal sudah optimal - pertahankan")
+    
+    # Add default recommendations if none
+    if not recommendations:
+        recommendations = [
+            "• Review distribusi dokter per poli",
+            "• Periksa jam sibuk (10:00-12:00) untuk penambahan slot",
+            "• Optimalkan penggunaan slot pagi vs sore",
+            "• Verifikasi tidak ada konflik jadwal dokter"
+        ]
+    
+    # Write recommendations
+    for i, rec in enumerate(recommendations):
+        ws.merge_cells(f"A{summary_row + i}:F{summary_row + i}")
+        cell = ws[f"A{summary_row + i}"]
+        cell.value = rec
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        cell.font = Font(size=10)
+    
+    # Footer
+    footer_row = summary_row + len(recommendations) + 2
+    
+    ws.merge_cells(f"A{footer_row}:F{footer_row}")
+    footer = ws[f"A{footer_row}"]
+    footer.value = "📌 Catatan: Laporan ini di-generate otomatis dari Kanban Board di aplikasi. Update secara berkala di tab Kanban."
+    footer.font = Font(italic=True, size=9, color="666666")
+    footer.alignment = Alignment(horizontal="center", vertical="center")
+    
+    # Adjust column widths
+    ws.column_dimensions['A'].width = 15
+    ws.column_dimensions['B'].width = 15
+    ws.column_dimensions['C'].width = 10
+    ws.column_dimensions['D'].width = 10
+    ws.column_dimensions['E'].width = 10
+    ws.column_dimensions['F'].width = 10
+    
+    return ws    
     def _generate_kanban_from_analysis(self, df_grid, slot_str):
         """Generate kanban data dari analisis jadwal jika tidak ada data kanban"""
         kanban_data = {
