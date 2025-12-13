@@ -9,7 +9,7 @@ from datetime import datetime
 # DEFAULT KANBAN UNTUK JADWAL DOKTER
 # ============================================================
 DEFAULT_KANBAN = {
-    "⚠️ MASALAH JADWAL": [
+    "MASALAH JADWAL": [
         {
             "text": "Slot overload Poleks (>7)", 
             "label": "Overload", 
@@ -29,7 +29,7 @@ DEFAULT_KANBAN = {
             "details": "Poli dengan slot kosong di jam sibuk (10:00-12:00)"
         },
     ],
-    "🔧 PERLU PENYESUAIAN": [
+    "PERLU PENYESUAIAN": [
         {
             "text": "Distribusi tidak merata pagi-sore", 
             "label": "Distribusi", 
@@ -43,7 +43,7 @@ DEFAULT_KANBAN = {
             "details": "Dokter dengan jumlah jam praktik terlalu banyak"
         },
     ],
-    "⏳ DALAM PROSES": [
+    "DALAM PROSES": [
         {
             "text": "Review jadwal Poli Anak", 
             "label": "Review", 
@@ -51,7 +51,7 @@ DEFAULT_KANBAN = {
             "details": "Jadwal Poli Anak sedang dalam proses review"
         },
     ],
-    "✅ OPTIMAL": [
+    "OPTIMAL": [
         {
             "text": "Poli Jantung - distribusi bagus", 
             "label": "Optimal", 
@@ -65,6 +65,16 @@ DEFAULT_KANBAN = {
             "details": "Slot waktu dengan jumlah dokter ideal (3-5 dokter)"
         },
     ],
+}
+
+# ============================================================
+# COLUMN DISPLAY NAMES (with emojis)
+# ============================================================
+COLUMN_DISPLAY_NAMES = {
+    "MASALAH JADWAL": "⚠️ MASALAH JADWAL",
+    "PERLU PENYESUAIAN": "🔧 PERLU PENYESUAIAN", 
+    "DALAM PROSES": "⏳ DALAM PROSES",
+    "OPTIMAL": "✅ OPTIMAL"
 }
 
 # ============================================================
@@ -92,6 +102,7 @@ LABEL_COLORS = {
 def get_kanban_data():
     """Get kanban data from session state"""
     if "kanban_data" not in st.session_state:
+        # Use keys without emojis for session state
         st.session_state["kanban_data"] = DEFAULT_KANBAN.copy()
     return st.session_state["kanban_data"]
 
@@ -102,10 +113,10 @@ def save_kanban_data(data):
 def get_schedule_issues():
     """Extract issues from processed schedule data"""
     issues = {
-        "⚠️ MASALAH JADWAL": [],
-        "🔧 PERLU PENYESUAIAN": [],
-        "⏳ DALAM PROSES": [],
-        "✅ OPTIMAL": []
+        "MASALAH JADWAL": [],
+        "PERLU PENYESUAIAN": [],
+        "DALAM PROSES": [],
+        "OPTIMAL": []
     }
     
     if "processed_data" not in st.session_state:
@@ -123,23 +134,23 @@ def get_schedule_issues():
     
     # 1. Check for overload slots
     overload_issues = analyze_overload_slots(df, slot_strings)
-    issues["⚠️ MASALAH JADWAL"].extend(overload_issues)
+    issues["MASALAH JADWAL"].extend(overload_issues)
     
     # 2. Check for doctor conflicts
     conflict_issues = analyze_doctor_conflicts(df, slot_strings)
-    issues["⚠️ MASALAH JADWAL"].extend(conflict_issues)
+    issues["MASALAH JADWAL"].extend(conflict_issues)
     
     # 3. Check for empty slots during peak hours
     empty_issues = analyze_empty_slots(df, slot_strings)
-    issues["🔧 PERLU PENYESUAIAN"].extend(empty_issues)
+    issues["PERLU PENYESUAIAN"].extend(empty_issues)
     
     # 4. Check for distribution issues
     distribution_issues = analyze_distribution(df, slot_strings)
-    issues["🔧 PERLU PENYESUAIAN"].extend(distribution_issues)
+    issues["PERLU PENYESUAIAN"].extend(distribution_issues)
     
     # 5. Find optimal schedules
     optimal_issues = find_optimal_schedules(df, slot_strings)
-    issues["✅ OPTIMAL"].extend(optimal_issues)
+    issues["OPTIMAL"].extend(optimal_issues)
     
     return issues
 
@@ -374,12 +385,12 @@ def render_drag_kanban():
                 issues = get_schedule_issues()
                 
                 # Clear existing data except "DALAM PROSES" and "OPTIMAL"
-                kanban_data["⚠️ MASALAH JADWAL"] = issues["⚠️ MASALAH JADWAL"]
-                kanban_data["🔧 PERLU PENYESUAIAN"] = issues["🔧 PERLU PENYESUAIAN"]
+                kanban_data["MASALAH JADWAL"] = issues["MASALAH JADWAL"]
+                kanban_data["PERLU PENYESUAIAN"] = issues["PERLU PENYESUAIAN"]
                 
                 # Keep "DALAM PROSES" and "OPTIMAL" as they are
                 save_kanban_data(kanban_data)
-                st.success(f"Generated {len(issues['⚠️ MASALAH JADWAL'])} masalah dan {len(issues['🔧 PERLU PENYESUAIAN'])} penyesuaian")
+                st.success(f"Generated {len(issues['MASALAH JADWAL'])} masalah dan {len(issues['PERLU PENYESUAIAN'])} penyesuaian")
                 st.rerun()
             else:
                 st.warning("Belum ada data jadwal yang diproses")
@@ -395,7 +406,7 @@ def render_drag_kanban():
             new_priority = st.selectbox("Prioritas", list(PRIORITY_COLORS.keys()))
             new_details = st.text_area("Detail Permasalahan", 
                                      placeholder="Deskripsi detail permasalahan...")
-            target_column = st.selectbox("Kolom Tujuan", list(kanban_data.keys()))
+            target_column = st.selectbox("Kolom Tujuan", list(COLUMN_DISPLAY_NAMES.keys()))
             
             if st.form_submit_button("Tambah Kartu", use_container_width=True):
                 if new_text.strip():
@@ -459,31 +470,40 @@ def render_drag_kanban():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown("### ⚠️ MASALAH JADWAL")
-        st.caption(f"{len(kanban_data['⚠️ MASALAH JADWAL'])} kartu")
-        render_column("⚠️ MASALAH JADWAL", kanban_data)
+        display_name = COLUMN_DISPLAY_NAMES["MASALAH JADWAL"]
+        st.markdown(f"### {display_name}")
+        st.caption(f"{len(kanban_data['MASALAH JADWAL'])} kartu")
+        render_column("MASALAH JADWAL", kanban_data)
     
     with col2:
-        st.markdown("### 🔧 PERLU PENYESUAIAN")
-        st.caption(f"{len(kanban_data['🔧 PERLU PENYESUAIAN'])} kartu")
-        render_column("🔧 PERLU PENYESUAIAN", kanban_data)
+        display_name = COLUMN_DISPLAY_NAMES["PERLU PENYESUAIAN"]
+        st.markdown(f"### {display_name}")
+        st.caption(f"{len(kanban_data['PERLU PENYESUAIAN'])} kartu")
+        render_column("PERLU PENYESUAIAN", kanban_data)
     
     with col3:
-        st.markdown("### ⏳ DALAM PROSES")
-        st.caption(f"{len(kanban_data['⏳ DALAM PROSES'])} kartu")
-        render_column("⏳ DALAM PROSES", kanban_data)
+        display_name = COLUMN_DISPLAY_NAMES["DALAM PROSES"]
+        st.markdown(f"### {display_name}")
+        st.caption(f"{len(kanban_data['DALAM PROSES'])} kartu")
+        render_column("DALAM PROSES", kanban_data)
     
     with col4:
-        st.markdown("### ✅ OPTIMAL")
-        st.caption(f"{len(kanban_data['✅ OPTIMAL'])} kartu")
-        render_column("✅ OPTIMAL", kanban_data)
+        display_name = COLUMN_DISPLAY_NAMES["OPTIMAL"]
+        st.markdown(f"### {display_name}")
+        st.caption(f"{len(kanban_data['OPTIMAL'])} kartu")
+        render_column("OPTIMAL", kanban_data)
     
     # Interactive HTML Kanban Board
     st.divider()
     st.subheader("🎯 Drag & Drop Board")
     
-    # Prepare data for HTML
-    html_data = json.dumps(kanban_data, ensure_ascii=False)
+    # Prepare data for HTML (convert to display names with emojis)
+    kanban_data_with_emojis = {}
+    for key, cards in kanban_data.items():
+        display_key = COLUMN_DISPLAY_NAMES.get(key, key)
+        kanban_data_with_emojis[display_key] = cards
+    
+    html_data = json.dumps(kanban_data_with_emojis, ensure_ascii=False)
     
     # Generate HTML with interactive kanban
     html = generate_kanban_html(html_data)
@@ -500,8 +520,8 @@ def render_drag_kanban():
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Kartu", total_cards)
     col2.metric("Prioritas Tinggi", high_priority)
-    col3.metric("Masalah", len(kanban_data["⚠️ MASALAH JADWAL"]))
-    col4.metric("Optimal", len(kanban_data["✅ OPTIMAL"]))
+    col3.metric("Masalah", len(kanban_data["MASALAH JADWAL"]))
+    col4.metric("Optimal", len(kanban_data["OPTIMAL"]))
 
 def render_column(column_name, kanban_data):
     """Render a single column in Streamlit"""
@@ -512,12 +532,16 @@ def render_column(column_name, kanban_data):
         return
     
     for i, card in enumerate(cards):
-        # Create a unique key for each card
-        card_key = f"{column_name}_{i}_{hash(str(card))}"
+        # Create a unique key for each card (without special characters)
+        card_key = f"{column_name}_{i}_{abs(hash(str(card))) % 10000:04d}"
+        
+        # Clean card text for expander label (remove special characters that might cause issues)
+        card_text_clean = card['text'].replace('⚠️', '').replace('🔧', '').replace('⏳', '').replace('✅', '')
+        expander_label = f"📋 {card_text_clean[:40]}..." if len(card_text_clean) > 40 else f"📋 {card_text_clean}"
         
         # Create expandable card container
         with st.expander(
-            f"📋 {card['text'][:40]}..." if len(card['text']) > 40 else f"📋 {card['text']}",
+            expander_label,
             expanded=False,
             key=f"expander_{card_key}"
         ):
@@ -570,7 +594,7 @@ def render_column(column_name, kanban_data):
             # Show structured data if available
             if 'data' in card and card['data']:
                 st.divider()
-                with st.expander("📊 Data Teknis", expanded=False):
+                with st.expander("📊 Data Teknis", expanded=False, key=f"data_{card_key}"):
                     st.json(card['data'])
             
             # Action buttons
@@ -598,7 +622,7 @@ def render_column(column_name, kanban_data):
                     with st.form(key=f"edit_form_{card_key}"):
                         new_text = st.text_input("Judul Kartu", value=card.get('text', ''))
                         new_details = st.text_area("Detail", value=card.get('details', ''), 
-                                                  height=150)
+                                                  height=150, key=f"details_{card_key}")
                         
                         col_save, col_cancel = st.columns(2)
                         with col_save:
@@ -650,7 +674,7 @@ def render_column(column_name, kanban_data):
                             kanban_data[target_col].append(moved_card)
                             save_kanban_data(kanban_data)
                             st.session_state[move_key] = False
-                            st.success(f"Kartu dipindah ke {target_col}")
+                            st.success(f"Kartu dipindah ke {COLUMN_DISPLAY_NAMES.get(target_col, target_col)}")
                             st.rerun()
                     
                     with col_move_cancel:
@@ -765,23 +789,20 @@ def generate_kanban_html(kanban_data_json):
         .priority-high {{ 
             background: #ff4d4f; 
             color: white;
-            border-left-color: #ff4d4f !important;
         }}
         .priority-medium {{ 
             background: #faad14; 
             color: white;
-            border-left-color: #faad14 !important;
         }}
         .priority-low {{ 
             background: #52c41a; 
             color: white;
-            border-left-color: #52c41a !important;
         }}
         
         /* Set border color based on priority */
-        .card[data-priority="High"] {{ border-left-color: #ff4d4f; }}
-        .card[data-priority="Medium"] {{ border-left-color: #faad14; }}
-        .card[data-priority="Low"] {{ border-left-color: #52c41a; }}
+        .card[data-priority="High"] {{ border-left-color: #ff4d4f !important; }}
+        .card[data-priority="Medium"] {{ border-left-color: #faad14 !important; }}
+        .card[data-priority="Low"] {{ border-left-color: #52c41a !important; }}
         
         .label-overload {{ background: #ff7875; }}
         .label-konflik {{ background: #ff9c6e; }}
@@ -923,8 +944,8 @@ def generate_kanban_html(kanban_data_json):
                 
                 cards.forEach(card => {{
                     if (card.priority === 'High') highPriority++;
-                    if (columnName === '⚠️ MASALAH JADWAL') problems++;
-                    if (columnName === '✅ OPTIMAL') optimal++;
+                    if (columnName.includes('MASALAH')) problems++;
+                    if (columnName.includes('OPTIMAL')) optimal++;
                 }});
             }});
             
