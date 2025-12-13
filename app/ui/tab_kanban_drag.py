@@ -512,85 +512,155 @@ def render_column(column_name, kanban_data):
         return
     
     for i, card in enumerate(cards):
-        with st.container():
+        # Create a unique key for each card
+        card_key = f"{column_name}_{i}_{hash(str(card))}"
+        
+        # Create expandable card container
+        with st.expander(
+            f"📋 {card['text'][:40]}..." if len(card['text']) > 40 else f"📋 {card['text']}",
+            expanded=False,
+            key=f"expander_{card_key}"
+        ):
             # Priority indicator
             priority_color = PRIORITY_COLORS.get(card.get("priority", "Medium"), "#d9d9d9")
             
-            # Create expandable card
-            with st.expander(f"📋 {card['text'][:50]}..." if len(card['text']) > 50 else f"📋 {card['text']}", expanded=False):
-                # Card header
+            # Card header
+            st.markdown(f"""
+            <div style="border-left: 4px solid {priority_color}; padding-left: 10px; margin-bottom: 10px;">
+                <div style="font-weight: 600; font-size: 14px; margin-bottom: 5px;">{card['text']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Labels and priority
+            col_label, col_priority = st.columns([2, 1])
+            with col_label:
+                label_color = LABEL_COLORS.get(card['label'], '#d9d9d9')
                 st.markdown(f"""
-                <div style="border-left: 4px solid {priority_color}; padding-left: 10px; margin-bottom: 10px;">
-                    <div style="font-weight: 600; font-size: 14px;">{card['text']}</div>
+                <div style="background-color: {label_color}; color: white; 
+                     padding: 4px 12px; border-radius: 12px; font-size: 0.8em; 
+                     display: inline-block; margin-bottom: 10px;">
+                    {card['label']}
                 </div>
                 """, unsafe_allow_html=True)
-                
-                # Labels
-                col_label, col_priority = st.columns([2, 1])
-                with col_label:
-                    label_color = LABEL_COLORS.get(card['label'], '#d9d9d9')
-                    st.markdown(f"""
-                    <span style="background-color: {label_color}; color: white; 
-                           padding: 4px 12px; border-radius: 12px; font-size: 0.8em;">
-                        {card['label']}
-                    </span>
-                    """, unsafe_allow_html=True)
-                
-                with col_priority:
-                    st.markdown(f"""
-                    <span style="color: {priority_color}; font-weight: 500; font-size: 0.9em;">
-                        {card.get('priority', 'Medium')}
-                    </span>
-                    """, unsafe_allow_html=True)
-                
-                # Details section
-                st.divider()
-                st.markdown("**📝 Detail Permasalahan:**")
-                
-                if 'details' in card and card['details']:
-                    # Check if details contain HTML
-                    if any(tag in card['details'] for tag in ['<br>', '<b>', '<ul>']):
-                        st.markdown(card['details'], unsafe_allow_html=True)
-                    else:
-                        st.write(card['details'])
-                    
-                    # Show structured data if available
-                    if 'data' in card and card['data']:
-                        st.divider()
-                        with st.expander("📊 Data Teknis", expanded=False):
-                            st.json(card['data'])
+            
+            with col_priority:
+                st.markdown(f"""
+                <div style="color: {priority_color}; font-weight: 500; font-size: 0.9em; 
+                     padding: 4px 8px; border: 1px solid {priority_color}; 
+                     border-radius: 8px; display: inline-block;">
+                    {card.get('priority', 'Medium')}
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Details section
+            st.divider()
+            st.markdown("**📝 Detail Permasalahan:**")
+            
+            if 'details' in card and card['details']:
+                # Render details with HTML support
+                if '<br>' in card['details'] or '<b>' in card['details']:
+                    st.markdown(card['details'], unsafe_allow_html=True)
                 else:
-                    st.info("Tidak ada detail tambahan")
-                
-                # Action buttons
+                    # Add line breaks for better readability
+                    details_text = card['details'].replace('. ', '.\n\n')
+                    st.text(details_text)
+            else:
+                st.info("Tidak ada detail tambahan untuk kartu ini.")
+            
+            # Show structured data if available
+            if 'data' in card and card['data']:
                 st.divider()
-                col_copy, col_edit, col_delete = st.columns([1, 1, 1])
+                with st.expander("📊 Data Teknis", expanded=False):
+                    st.json(card['data'])
+            
+            # Action buttons
+            st.divider()
+            st.markdown("**🛠️ Aksi:**")
+            
+            col_copy, col_edit, col_delete, col_move = st.columns(4)
+            
+            with col_copy:
+                if st.button("📋 Salin", key=f"copy_{card_key}", help="Salin teks kartu", 
+                           use_container_width=True, type="secondary"):
+                    st.toast(f"Disalin: {card['text'][:50]}...")
+            
+            with col_edit:
+                # Using session state to track edit mode
+                edit_key = f"edit_mode_{card_key}"
+                if edit_key not in st.session_state:
+                    st.session_state[edit_key] = False
                 
-                with col_copy:
-                    if st.button("📋", key=f"copy_{column_name}_{i}", help="Salin", use_container_width=True):
-                        st.toast(f"Disalin: {card['text']}")
+                if st.button("✏️ Edit", key=f"edit_btn_{card_key}", 
+                           help="Edit kartu ini", use_container_width=True, type="secondary"):
+                    st.session_state[edit_key] = True
                 
-                with col_edit:
-                    if st.button("✏️", key=f"edit_{column_name}_{i}", help="Edit", use_container_width=True):
-                        # Edit form
-                        with st.form(key=f"edit_form_{column_name}_{i}"):
-                            new_text = st.text_input("Judul", value=card.get('text', ''))
-                            new_details = st.text_area("Detail", value=card.get('details', ''))
-                            
-                            if st.form_submit_button("Simpan"):
+                if st.session_state[edit_key]:
+                    with st.form(key=f"edit_form_{card_key}"):
+                        new_text = st.text_input("Judul Kartu", value=card.get('text', ''))
+                        new_details = st.text_area("Detail", value=card.get('details', ''), 
+                                                  height=150)
+                        
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.form_submit_button("💾 Simpan", use_container_width=True):
                                 kanban_data[column_name][i]["text"] = new_text
                                 kanban_data[column_name][i]["details"] = new_details
                                 save_kanban_data(kanban_data)
+                                st.session_state[edit_key] = False
                                 st.success("Kartu diperbarui!")
                                 st.rerun()
-                
-                with col_delete:
-                    if st.button("🗑️", key=f"delete_{column_name}_{i}", help="Hapus", use_container_width=True):
-                        kanban_data[column_name].pop(i)
-                        save_kanban_data(kanban_data)
-                        st.rerun()
+                        
+                        with col_cancel:
+                            if st.form_submit_button("❌ Batal", use_container_width=True, 
+                                                   type="secondary"):
+                                st.session_state[edit_key] = False
+                                st.rerun()
             
-            st.divider()
+            with col_delete:
+                if st.button("🗑️ Hapus", key=f"delete_{card_key}", 
+                           help="Hapus kartu ini", use_container_width=True, type="secondary"):
+                    kanban_data[column_name].pop(i)
+                    save_kanban_data(kanban_data)
+                    st.success("Kartu dihapus!")
+                    st.rerun()
+            
+            with col_move:
+                # Move to another column
+                move_key = f"move_mode_{card_key}"
+                if move_key not in st.session_state:
+                    st.session_state[move_key] = False
+                
+                if st.button("➡️ Pindah", key=f"move_btn_{card_key}", 
+                           help="Pindah ke kolom lain", use_container_width=True, type="secondary"):
+                    st.session_state[move_key] = True
+                
+                if st.session_state[move_key]:
+                    target_col = st.selectbox(
+                        "Pilih kolom tujuan:",
+                        list(kanban_data.keys()),
+                        key=f"move_select_{card_key}"
+                    )
+                    
+                    col_move_confirm, col_move_cancel = st.columns(2)
+                    with col_move_confirm:
+                        if st.button("✅ Pindahkan", key=f"move_confirm_{card_key}", 
+                                   use_container_width=True):
+                            # Move card to target column
+                            moved_card = kanban_data[column_name].pop(i)
+                            kanban_data[target_col].append(moved_card)
+                            save_kanban_data(kanban_data)
+                            st.session_state[move_key] = False
+                            st.success(f"Kartu dipindah ke {target_col}")
+                            st.rerun()
+                    
+                    with col_move_cancel:
+                        if st.button("❌ Batal", key=f"move_cancel_{card_key}", 
+                                   use_container_width=True, type="secondary"):
+                            st.session_state[move_key] = False
+                            st.rerun()
+        
+        # Add some spacing between cards
+        st.markdown('<div style="margin-bottom: 15px;"></div>', unsafe_allow_html=True)
 
 def generate_kanban_html(kanban_data_json):
     """Generate interactive HTML kanban board with detailed cards"""
@@ -645,11 +715,12 @@ def generate_kanban_html(kanban_data_json):
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             cursor: move;
             border-left: 4px solid #4CAF50;
-            transition: transform 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
         }}
         .card:hover {{
             transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }}
         .card-header {{
             font-weight: 500;
@@ -663,6 +734,7 @@ def generate_kanban_html(kanban_data_json):
             border-radius: 12px;
             font-size: 12px;
             font-weight: 500;
+            margin-right: 8px;
             margin-bottom: 8px;
             color: white;
         }}
@@ -674,10 +746,13 @@ def generate_kanban_html(kanban_data_json):
             background: #f8f9fa;
             border-radius: 6px;
             border-left: 3px solid #1890ff;
-            display: none;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out, padding 0.3s ease-out;
         }}
         .card:hover .card-details {{
-            display: block;
+            max-height: 200px;
+            padding: 10px;
         }}
         .card-priority {{
             font-size: 11px;
@@ -685,10 +760,28 @@ def generate_kanban_html(kanban_data_json):
             padding: 2px 8px;
             border-radius: 10px;
             display: inline-block;
+            float: right;
         }}
-        .priority-high {{ background: #ff4d4f; color: white; }}
-        .priority-medium {{ background: #faad14; color: white; }}
-        .priority-low {{ background: #52c41a; color: white; }}
+        .priority-high {{ 
+            background: #ff4d4f; 
+            color: white;
+            border-left-color: #ff4d4f !important;
+        }}
+        .priority-medium {{ 
+            background: #faad14; 
+            color: white;
+            border-left-color: #faad14 !important;
+        }}
+        .priority-low {{ 
+            background: #52c41a; 
+            color: white;
+            border-left-color: #52c41a !important;
+        }}
+        
+        /* Set border color based on priority */
+        .card[data-priority="High"] {{ border-left-color: #ff4d4f; }}
+        .card[data-priority="Medium"] {{ border-left-color: #faad14; }}
+        .card[data-priority="Low"] {{ border-left-color: #52c41a; }}
         
         .label-overload {{ background: #ff7875; }}
         .label-konflik {{ background: #ff9c6e; }}
@@ -715,6 +808,7 @@ def generate_kanban_html(kanban_data_json):
             z-index: 1000;
             width: 300px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: block !important;
         }}
         
         .controls {{
@@ -756,6 +850,23 @@ def generate_kanban_html(kanban_data_json):
             font-size: 12px;
             color: #666;
             margin-top: 5px;
+        }}
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {{
+            width: 8px;
+            height: 8px;
+        }}
+        ::-webkit-scrollbar-track {{
+            background: #f1f1f1;
+            border-radius: 4px;
+        }}
+        ::-webkit-scrollbar-thumb {{
+            background: #888;
+            border-radius: 4px;
+        }}
+        ::-webkit-scrollbar-thumb:hover {{
+            background: #555;
         }}
     </style>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
@@ -844,23 +955,31 @@ def generate_kanban_html(kanban_data_json):
                     const cardDiv = document.createElement('div');
                     cardDiv.className = 'card';
                     cardDiv.dataset.card = JSON.stringify(card);
+                    cardDiv.dataset.priority = card.priority;
                     
                     // Add tooltip for hover
                     if (card.details) {{
                         cardDiv.classList.add('card-tooltip');
-                        cardDiv.setAttribute('data-tooltip', 
-                            card.details.replace(/<br>/g, '\\n').replace(/<[^>]*>/g, ''));
+                        // Clean HTML tags for tooltip
+                        const cleanDetails = card.details
+                            .replace(/<br>/g, '\\n')
+                            .replace(/<[^>]*>/g, '')
+                            .substring(0, 200);
+                        cardDiv.setAttribute('data-tooltip', cleanDetails + (card.details.length > 200 ? '...' : ''));
                     }}
                     
+                    // Card header
                     const header = document.createElement('div');
                     header.className = 'card-header';
                     header.textContent = card.text.length > 60 ? card.text.substring(0, 60) + '...' : card.text;
                     
+                    // Card label
                     const label = document.createElement('div');
                     label.className = `card-label label-${{card.label.toLowerCase()}}`;
                     label.textContent = card.label;
                     label.style.backgroundColor = labelColors[card.label] || '#d9d9d9';
                     
+                    // Card priority
                     const priority = document.createElement('div');
                     priority.className = `card-priority priority-${{card.priority.toLowerCase()}}`;
                     priority.textContent = card.priority;
@@ -875,6 +994,7 @@ def generate_kanban_html(kanban_data_json):
                         details.textContent = 'Tidak ada detail tambahan';
                     }}
                     
+                    // Assemble card
                     cardDiv.appendChild(header);
                     cardDiv.appendChild(label);
                     cardDiv.appendChild(priority);
