@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import io
 import traceback
+from datetime import datetime  # ✅ IMPORT datetime di sini
 
 def render_upload_tab(scheduler, writer, analyzer, validator, config):
     st.subheader("📤 Upload & Proses Jadwal")
@@ -14,7 +15,7 @@ def render_upload_tab(scheduler, writer, analyzer, validator, config):
         "Upload file Excel (Format: sheet Reguler & Poleks)",
         type=['xlsx', 'xls'],
         help="File harus memiliki sheet 'Reguler' dan 'Poleks'",
-        key="file_uploader"  # Tambahkan key untuk session state
+        key="file_uploader"
     )
     
     # ======================================================
@@ -27,7 +28,7 @@ def render_upload_tab(scheduler, writer, analyzer, validator, config):
             
             st.session_state["uploaded_file_bytes"] = uploaded_file.getvalue()
             st.session_state["uploaded_file_name"] = uploaded_file.name
-            st.session_state["processed_data"] = None  # Reset processed data
+            st.session_state["processed_data"] = None
             st.session_state["slot_strings"] = None
             print(f"✅ File saved to session: {uploaded_file.name}")
         
@@ -124,7 +125,6 @@ def render_upload_tab(scheduler, writer, analyzer, validator, config):
         
         with col1:
             if st.button("📥 Download Excel Hasil", width='stretch', key="download_excel"):
-                # Set flag untuk menunjukkan download di-klik
                 st.session_state["download_clicked"] = True
         
         with col2:
@@ -133,38 +133,40 @@ def render_upload_tab(scheduler, writer, analyzer, validator, config):
         
         with col3:
             if st.button("🔄 Proses Ulang", width='stretch', key="reprocess"):
-                # Clear processed data untuk memulai ulang
                 for key in ["processed_data", "slot_strings", "processing_errors"]:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
         
         # ======================================================
-        # ACTUAL DOWNLOAD HANDLING (setelah tombol diklik)
+        # ACTUAL DOWNLOAD HANDLING
         # ======================================================
         
         # Handle Excel download
         if st.session_state.get("download_clicked", False):
             try:
-                # Reset flag
                 st.session_state["download_clicked"] = False
                 
                 with st.spinner("Membuat file Excel..."):
-                    # Buat stream baru dari bytes
+                    # Buat stream baru
                     file_stream = io.BytesIO(st.session_state["uploaded_file_bytes"])
                     
-                    # Generate Excel
+                    # Generate Excel - gunakan datetime dari import global
                     output_buffer = writer.write(
                         source_file=file_stream,
                         df_grid=grid_df,
                         slot_str=slot_strings
                     )
                     
+                    # Buat nama file dengan timestamp
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f"jadwal_hasil_{timestamp}.xlsx"
+                    
                     # Tampilkan download button
                     st.download_button(
-                        label="⬇️ Klik untuk download file Excel",
+                        label=f"⬇️ Download: {filename}",
                         data=output_buffer,
-                        file_name=f"jadwal_hasil_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        file_name=filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         width='stretch',
                         key="excel_download_button"
@@ -220,6 +222,3 @@ def render_upload_tab(scheduler, writer, analyzer, validator, config):
             - `Kamis` - Format sama
             - `Jum'at` - Format sama
             """)
-            
-            # Tambahkan import datetime di atas
-            from datetime import datetime
