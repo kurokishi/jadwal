@@ -124,7 +124,7 @@ def analyze_overload_slots(df, slot_strings):
                         "data": {
                             "hari": hari,
                             "slot": slot,
-                            "count": poleks_count,
+                            "count": int(poleks_count),  # Convert to Python int
                             "max": max_poleks,
                             "type": "overload"
                         }
@@ -193,7 +193,7 @@ def analyze_empty_slots(df, slot_strings):
                     "data": {
                         "poli": poli,
                         "hari": hari,
-                        "empty_slots": empty_in_peak,
+                        "empty_slots": int(empty_in_peak),  # Convert to Python int
                         "type": "empty"
                     }
                 })
@@ -218,14 +218,14 @@ def analyze_distribution(df, slot_strings):
         # Count R and E slots for morning
         for slot in morning_slots:
             if slot in poli_data.columns:
-                morning_count += (poli_data[slot] == "R").sum()
-                morning_count += (poli_data[slot] == "E").sum()
+                morning_count += int((poli_data[slot] == "R").sum())
+                morning_count += int((poli_data[slot] == "E").sum())
         
         # Count R and E slots for afternoon
         for slot in afternoon_slots:
             if slot in poli_data.columns:
-                afternoon_count += (poli_data[slot] == "R").sum()
-                afternoon_count += (poli_data[slot] == "E").sum()
+                afternoon_count += int((poli_data[slot] == "R").sum())
+                afternoon_count += int((poli_data[slot] == "E").sum())
         
         total = morning_count + afternoon_count
         if total > 0:
@@ -239,8 +239,8 @@ def analyze_distribution(df, slot_strings):
                     "priority": "Medium",
                     "data": {
                         "poli": poli,
-                        "morning_pct": morning_pct,
-                        "afternoon_pct": afternoon_pct,
+                        "morning_pct": float(morning_pct),  # Convert to float
+                        "afternoon_pct": float(afternoon_pct),  # Convert to float
                         "type": "distribution"
                     }
                 })
@@ -261,18 +261,31 @@ def find_optimal_schedules(df, slot_strings):
                 
                 if 3 <= doctor_count <= 5:  # Optimal range
                     issues.append({
-                        "text": f"{hari} {slot}: {doctor_count} dokter (optimal)",
+                        "text": f"{hari} {slot}: {int(doctor_count)} dokter (optimal)",  # Convert to int
                         "label": "Optimal",
                         "priority": "Low",
                         "data": {
                             "hari": hari,
                             "slot": slot,
-                            "doctor_count": doctor_count,
+                            "doctor_count": int(doctor_count),  # Convert to Python int
                             "type": "optimal"
                         }
                     })
     
     return issues
+
+# Custom JSON encoder untuk handle numpy types
+class NumpyJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, pd.Timestamp):
+            return obj.isoformat()
+        return super().default(obj)
 
 # ============================================================
 # RENDER TAB KANBAN
@@ -333,7 +346,7 @@ def render_drag_kanban():
         col1, col2 = st.columns(2)
         with col1:
             # Create download button
-            json_str = json.dumps(kanban_data, indent=2, ensure_ascii=False)
+            json_str = json.dumps(kanban_data, indent=2, ensure_ascii=False, cls=NumpyJSONEncoder)
             st.download_button(
                 label="📥 Download JSON",
                 data=json_str,
@@ -396,7 +409,7 @@ def render_drag_kanban():
     st.subheader("🎯 Drag & Drop Board")
     
     # Prepare data for HTML
-    html_data = json.dumps(kanban_data, ensure_ascii=False)
+    html_data = json.dumps(kanban_data, ensure_ascii=False, cls=NumpyJSONEncoder)
     
     # Generate HTML with interactive kanban
     html = generate_kanban_html(html_data)
@@ -597,8 +610,8 @@ def generate_kanban_html(kanban_data_json):
         const kanbanData = {kanban_data_json};
         
         // Color mappings
-        const labelColors = {json.dumps(LABEL_COLORS)};
-        const priorityColors = {json.dumps(PRIORITY_COLORS)};
+        const labelColors = {json.dumps(LABEL_COLORS, cls=NumpyJSONEncoder)};
+        const priorityColors = {json.dumps(PRIORITY_COLORS, cls=NumpyJSONEncoder)};
         
         // Render the board
         function renderBoard() {{
