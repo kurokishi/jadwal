@@ -2,220 +2,700 @@
 
 import streamlit as st
 import json
+import pandas as pd
+from datetime import datetime
 
+# ============================================================
+# DEFAULT KANBAN UNTUK JADWAL DOKTER
+# ============================================================
 DEFAULT_KANBAN = {
-    "BACKLOG": [
-        {"text": "Heatmap aktivitas dokter", "label": "Feature"},
-        {"text": "Heatmap beban poli", "label": "Feature"},
-        {"text": "Dropdown otomatis di template", "label": "Improvement"},
+    "⚠️ MASALAH JADWAL": [
+        {"text": "Slot overload Poleks (>7)", "label": "Overload", "priority": "High"},
+        {"text": "Dokter konflik waktu", "label": "Konflik", "priority": "High"},
+        {"text": "Poli tidak terisi di jam sibuk", "label": "Kosong", "priority": "Medium"},
     ],
-    "READY": [
-        {"text": "Optimasi performa Excel Writer", "label": "Improvement"},
-        {"text": "Toggle merge shift dokter", "label": "Feature"},
+    "🔧 PERLU PENYESUAIAN": [
+        {"text": "Distribusi tidak merata pagi-sore", "label": "Distribusi", "priority": "Medium"},
+        {"text": "Dokter dengan jadwal terlalu padat", "label": "Beban", "priority": "Medium"},
     ],
-    "IN PROGRESS": [
-        {"text": "Stabilitas merge shift dokter", "label": "Improvement"},
+    "⏳ DALAM PROSES": [
+        {"text": "Review jadwal Poli Anak", "label": "Review", "priority": "Low"},
     ],
-    "TESTING": [
-        {"text": "Akurasi rekap layanan", "label": "Bug"},
-    ],
-    "DONE": [
-        {"text": "Download Template Excel", "label": "Feature"},
+    "✅ OPTIMAL": [
+        {"text": "Poli Jantung - distribusi bagus", "label": "Optimal", "priority": "Low"},
+        {"text": "Jam 10:00-12:00 - slot ideal", "label": "Optimal", "priority": "Low"},
     ],
 }
 
+# ============================================================
+# PRIORITY COLORS
+# ============================================================
+PRIORITY_COLORS = {
+    "High": "#ff4d4f",    # Merah
+    "Medium": "#faad14",   # Kuning
+    "Low": "#52c41a"       # Hijau
+}
+
+LABEL_COLORS = {
+    "Overload": "#ff7875",
+    "Konflik": "#ff9c6e",
+    "Kosong": "#69c0ff",
+    "Distribusi": "#95de64",
+    "Beban": "#b37feb",
+    "Review": "#ffd666",
+    "Optimal": "#5cdbd3"
+}
 
 # ============================================================
-# SESSION STORAGE — bukan penyimpanan file
+# SESSION MANAGEMENT
 # ============================================================
-def get_server_kanban():
+def get_kanban_data():
+    """Get kanban data from session state"""
     if "kanban_data" not in st.session_state:
         st.session_state["kanban_data"] = DEFAULT_KANBAN.copy()
     return st.session_state["kanban_data"]
 
-
-def save_server_kanban(data):
+def save_kanban_data(data):
+    """Save kanban data to session state"""
     st.session_state["kanban_data"] = data
 
+def get_schedule_issues():
+    """Extract issues from processed schedule data"""
+    issues = {
+        "⚠️ MASALAH JADWAL": [],
+        "🔧 PERLU PENYESUAIAN": [],
+        "⏳ DALAM PROSES": [],
+        "✅ OPTIMAL": []
+    }
+    
+    if "processed_data" not in st.session_state:
+        return issues
+    
+    df = st.session_state["processed_data"]
+    slot_strings = st.session_state.get("slot_strings", [])
+    
+    if df is None or df.empty or not slot_strings:
+        return issues
+    
+    # ============================================================
+    # ANALYZE SCHEDULE FOR ISSUES
+    # ============================================================
+    
+    # 1. Check for overload slots
+    overload_issues = analyze_overload_slots(df, slot_strings)
+    issues["⚠️ MASALAH JADWAL"].extend(overload_issues)
+    
+    # 2. Check for doctor conflicts
+    conflict_issues = analyze_doctor_conflicts(df, slot_strings)
+    issues["⚠️ MASALAH JADWAL"].extend(conflict_issues)
+    
+    # 3. Check for empty slots during peak hours
+    empty_issues = analyze_empty_slots(df, slot_strings)
+    issues["🔧 PERLU PENYESUAIAN"].extend(empty_issues)
+    
+    # 4. Check for distribution issues
+    distribution_issues = analyze_distribution(df, slot_strings)
+    issues["🔧 PERLU PENYESUAIAN"].extend(distribution_issues)
+    
+    # 5. Find optimal schedules
+    optimal_issues = find_optimal_schedules(df, slot_strings)
+    issues["✅ OPTIMAL"].extend(optimal_issues)
+    
+    return issues
+
+def analyze_overload_slots(df, slot_strings):
+    """Analyze slots with too many Poleks"""
+    issues = []
+    max_poleks = st.session_state.get("config", type('obj', (object,), {'max_poleks_per_slot': 7})).max_poleks_per_slot
+    
+    for hari in df["HARI"].unique():
+        hari_data = df[df["HARI"] == hari]
+        
+        for slot in slot_strings[:15]:  # Check first 15 slots
+            if slot in hari_data.columns:
+                poleks_count = (hari_data[slot] == "E").sum()
+                
+                if poleks_count > max_poleks:
+                    issues.append({
+                        "text": f"{hari} {slot}: {poleks_count} Poleks (batas {max_poleks})",
+                        "label": "Overload",
+                        "priority": "High",
+                        "data": {
+                            "hari": hari,
+                            "slot": slot,
+                            "count": poleks_count,
+                            "max": max_poleks,
+                            "type": "overload"
+                        }
+                    })
+    
+    return issues
+
+def analyze_doctor_conflicts(df, slot_strings):
+    """Analyze doctors with schedule conflicts"""
+    issues = []
+    
+    for (dokter, hari), group in df.groupby(["DOKTER", "HARI"]):
+        if len(group) > 1:  # Doctor appears in more than 1 poli
+            conflict_slots = []
+            
+            for slot in slot_strings[:10]:  # Check first 10 slots
+                if slot in group.columns:
+                    active_polis = group[group[slot].isin(["R", "E"])]["POLI"].tolist()
+                    if len(active_polis) > 1:
+                        conflict_slots.append({
+                            "slot": slot,
+                            "polis": active_polis
+                        })
+            
+            if conflict_slots:
+                issues.append({
+                    "text": f"Dr. {dokter} - {hari}: konflik di {len(conflict_slots)} slot",
+                    "label": "Konflik",
+                    "priority": "High",
+                    "data": {
+                        "dokter": dokter,
+                        "hari": hari,
+                        "conflicts": conflict_slots,
+                        "type": "conflict"
+                    }
+                })
+    
+    return issues
+
+def analyze_empty_slots(df, slot_strings):
+    """Analyze empty slots during peak hours"""
+    issues = []
+    
+    # Define peak hours (10:00-12:00)
+    peak_slots = [s for s in slot_strings if "10:00" <= s <= "12:00"]
+    
+    for hari in df["HARI"].unique():
+        hari_data = df[df["HARI"] == hari]
+        
+        for poli in hari_data["POLI"].unique():
+            poli_data = hari_data[hari_data["POLI"] == poli]
+            
+            empty_in_peak = 0
+            for slot in peak_slots:
+                if slot in poli_data.columns:
+                    if (poli_data[slot].isin(["R", "E"])).sum() == 0:
+                        empty_in_peak += 1
+            
+            if empty_in_peak >= 2:  # At least 2 empty slots in peak hours
+                issues.append({
+                    "text": f"{poli} - {hari}: {empty_in_peak} slot kosong di jam sibuk",
+                    "label": "Kosong",
+                    "priority": "Medium",
+                    "data": {
+                        "poli": poli,
+                        "hari": hari,
+                        "empty_slots": empty_in_peak,
+                        "type": "empty"
+                    }
+                })
+    
+    return issues
+
+def analyze_distribution(df, slot_strings):
+    """Analyze distribution issues"""
+    issues = []
+    
+    for poli in df["POLI"].unique():
+        poli_data = df[df["POLI"] == poli]
+        
+        # Count morning vs afternoon slots
+        morning_slots = [s for s in slot_strings if s < "12:00"]
+        afternoon_slots = [s for s in slot_strings if s >= "12:00"]
+        
+        morning_count = sum((poli_data[morning_slots] == "R").sum().sum(), 
+                           (poli_data[morning_slots] == "E").sum().sum()) if morning_slots else 0
+        
+        afternoon_count = sum((poli_data[afternoon_slots] == "R").sum().sum(),
+                             (poli_data[afternoon_slots] == "E").sum().sum()) if afternoon_slots else 0
+        
+        total = morning_count + afternoon_count
+        if total > 0:
+            morning_pct = (morning_count / total) * 100
+            afternoon_pct = (afternoon_count / total) * 100
+            
+            if morning_pct > 70:  # More than 70% in morning
+                issues.append({
+                    "text": f"{poli}: {morning_pct:.0f}% pagi, {afternoon_pct:.0f}% sore",
+                    "label": "Distribusi",
+                    "priority": "Medium",
+                    "data": {
+                        "poli": poli,
+                        "morning_pct": morning_pct,
+                        "afternoon_pct": afternoon_pct,
+                        "type": "distribution"
+                    }
+                })
+    
+    return issues
+
+def find_optimal_schedules(df, slot_strings):
+    """Find optimal schedules to highlight"""
+    issues = []
+    
+    # Find slots with good distribution (3-5 doctors)
+    for hari in df["HARI"].unique():
+        hari_data = df[df["HARI"] == hari]
+        
+        for slot in ["10:00", "11:00", "13:00"]:  # Key time slots
+            if slot in hari_data.columns:
+                doctor_count = (hari_data[slot].isin(["R", "E"])).sum()
+                
+                if 3 <= doctor_count <= 5:  # Optimal range
+                    issues.append({
+                        "text": f"{hari} {slot}: {doctor_count} dokter (optimal)",
+                        "label": "Optimal",
+                        "priority": "Low",
+                        "data": {
+                            "hari": hari,
+                            "slot": slot,
+                            "doctor_count": doctor_count,
+                            "type": "optimal"
+                        }
+                    })
+    
+    return issues
 
 # ============================================================
 # RENDER TAB KANBAN
 # ============================================================
 def render_drag_kanban():
-    st.title("📌 Kanban — Drag & Drop (Tanpa File System)")
-
-    server_data = get_server_kanban()
-
-    left, right = st.columns([1, 3])
-
-    # ============================================================
-    # LEFT PANEL — server controls
-    # ============================================================
-    with left:
-        st.subheader("Server Controls")
-
-        # ============= Upload JSON ============
-        uploaded = st.file_uploader("Upload Kanban JSON", type=["json"])
-        if uploaded:
-            try:
-                loaded = json.load(uploaded)
-
-                # Normalisasi
-                for col, items in loaded.items():
-                    fixed = []
-                    for item in items:
-                        if isinstance(item, dict) and "text" in item:
-                            if "label" not in item:
-                                item["label"] = "Feature"
-                            fixed.append(item)
-                        elif isinstance(item, str):
-                            fixed.append({"text": item, "label": "Feature"})
-                    loaded[col] = fixed
-
-                save_server_kanban(loaded)
-                st.success("Kanban JSON berhasil di-load ke server (session).")
-                st.experimental_rerun()
-
-            except Exception as e:
-                st.error(f"JSON tidak valid: {e}")
-
-        # ============= Tambah card baru ============
-        st.markdown("---")
-        st.markdown("### ➕ Tambah Card")
+    st.title("📌 Kanban Board - Manajemen Jadwal Dokter")
+    
+    # Get current kanban data
+    kanban_data = get_kanban_data()
+    
+    # Sidebar controls
+    with st.sidebar:
+        st.header("⚙️ Kontrol Kanban")
+        
+        # Generate cards from schedule
+        if st.button("🔄 Generate dari Jadwal", use_container_width=True):
+            if "processed_data" in st.session_state:
+                issues = get_schedule_issues()
+                
+                # Clear existing data except "DALAM PROSES" and "OPTIMAL"
+                kanban_data["⚠️ MASALAH JADWAL"] = issues["⚠️ MASALAH JADWAL"]
+                kanban_data["🔧 PERLU PENYESUAIAN"] = issues["🔧 PERLU PENYESUAIAN"]
+                
+                # Keep "DALAM PROSES" and "OPTIMAL" as they are
+                save_kanban_data(kanban_data)
+                st.success(f"Generated {len(issues['⚠️ MASALAH JADWAL'])} masalah dan {len(issues['🔧 PERLU PENYESUAIAN'])} penyesuaian")
+                st.rerun()
+            else:
+                st.warning("Belum ada data jadwal yang diproses")
+        
+        st.divider()
+        
+        # Add new card
+        st.subheader("➕ Tambah Kartu Manual")
+        
         with st.form("add_card_form"):
-            new_text = st.text_input("Judul")
-            new_label = st.selectbox("Label", ["Feature", "Improvement", "Bug"])
-            target = st.selectbox("Kolom", list(server_data.keys()))
-            add_btn = st.form_submit_button("Tambah")
-
-            if add_btn:
+            new_text = st.text_input("Judul Kartu")
+            new_label = st.selectbox("Label", list(LABEL_COLORS.keys()))
+            new_priority = st.selectbox("Prioritas", list(PRIORITY_COLORS.keys()))
+            target_column = st.selectbox("Kolom Tujuan", list(kanban_data.keys()))
+            
+            if st.form_submit_button("Tambah Kartu", use_container_width=True):
                 if new_text.strip():
-                    server_data[target].append({"text": new_text, "label": new_label})
-                    save_server_kanban(server_data)
-                    st.success("Ditambahkan!")
-                    st.experimental_rerun()
+                    kanban_data[target_column].append({
+                        "text": new_text,
+                        "label": new_label,
+                        "priority": new_priority
+                    })
+                    save_kanban_data(kanban_data)
+                    st.success("Kartu ditambahkan!")
+                    st.rerun()
+        
+        st.divider()
+        
+        # Import/Export
+        st.subheader("📁 Import/Export")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📥 Download JSON", use_container_width=True):
+                json_str = json.dumps(kanban_data, indent=2, ensure_ascii=False)
+                st.download_button(
+                    label="⬇️ Klik untuk download",
+                    data=json_str,
+                    file_name=f"kanban_jadwal_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+        
+        with col2:
+            uploaded = st.file_uploader("Upload JSON", type=["json"], label_visibility="collapsed")
+            if uploaded:
+                try:
+                    loaded = json.load(uploaded)
+                    save_kanban_data(loaded)
+                    st.success("JSON berhasil diimpor!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        
+        st.divider()
+        
+        # Reset buttons
+        if st.button("🗑️ Reset ke Default", use_container_width=True):
+            save_kanban_data(DEFAULT_KANBAN.copy())
+            st.success("Reset berhasil!")
+            st.rerun()
+        
+        if st.button("🧹 Kosongkan Semua", use_container_width=True, type="secondary"):
+            for column in kanban_data:
+                kanban_data[column] = []
+            save_kanban_data(kanban_data)
+            st.success("Semua kartu dihapus!")
+            st.rerun()
+    
+    # Main kanban board
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown("### ⚠️ MASALAH JADWAL")
+        st.caption(f"{len(kanban_data['⚠️ MASALAH JADWAL'])} kartu")
+        render_column("⚠️ MASALAH JADWAL", kanban_data)
+    
+    with col2:
+        st.markdown("### 🔧 PERLU PENYESUAIAN")
+        st.caption(f"{len(kanban_data['🔧 PERLU PENYESUAIAN'])} kartu")
+        render_column("🔧 PERLU PENYESUAIAN", kanban_data)
+    
+    with col3:
+        st.markdown("### ⏳ DALAM PROSES")
+        st.caption(f"{len(kanban_data['⏳ DALAM PROSES'])} kartu")
+        render_column("⏳ DALAM PROSES", kanban_data)
+    
+    with col4:
+        st.markdown("### ✅ OPTIMAL")
+        st.caption(f"{len(kanban_data['✅ OPTIMAL'])} kartu")
+        render_column("✅ OPTIMAL", kanban_data)
+    
+    # Interactive HTML Kanban Board
+    st.divider()
+    st.subheader("🎯 Drag & Drop Board")
+    
+    # Prepare data for HTML
+    html_data = json.dumps(kanban_data, ensure_ascii=False)
+    
+    # Generate HTML with interactive kanban
+    html = generate_kanban_html(html_data)
+    st.components.v1.html(html, height=700, scrolling=True)
+    
+    # Statistics
+    st.divider()
+    st.subheader("📊 Statistik Kanban")
+    
+    total_cards = sum(len(cards) for cards in kanban_data.values())
+    high_priority = sum(1 for column in kanban_data.values() 
+                       for card in column if card.get("priority") == "High")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Kartu", total_cards)
+    col2.metric("Prioritas Tinggi", high_priority)
+    col3.metric("Masalah", len(kanban_data["⚠️ MASALAH JADWAL"]))
+    col4.metric("Optimal", len(kanban_data["✅ OPTIMAL"]))
 
-        # ============= Download server JSON ============
-        st.markdown("---")
-        st.markdown("### 📥 Download Server JSON")
-        st.download_button(
-            "Download kanban.json",
-            data=json.dumps(server_data, indent=2, ensure_ascii=False),
-            file_name="kanban.json",
-            mime="application/json"
-        )
+def render_column(column_name, kanban_data):
+    """Render a single column in Streamlit"""
+    cards = kanban_data[column_name]
+    
+    if not cards:
+        st.info("Tidak ada kartu")
+        return
+    
+    for i, card in enumerate(cards):
+        with st.container():
+            # Priority indicator
+            priority_color = PRIORITY_COLORS.get(card.get("priority", "Medium"), "#d9d9d9")
+            
+            # Card header with priority
+            st.markdown(f"""
+            <div style="border-left: 4px solid {priority_color}; padding-left: 10px; margin-bottom: 10px;">
+                <div style="font-weight: 500;">{card['text']}</div>
+                <div style="display: flex; gap: 8px; margin-top: 4px;">
+                    <span style="background-color: {LABEL_COLORS.get(card['label'], '#d9d9d9')}; 
+                           color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8em;">
+                        {card['label']}
+                    </span>
+                    <span style="color: {priority_color}; font-size: 0.8em;">
+                        {card.get('priority', 'Medium')}
+                    </span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Action buttons
+            col1, col2, col3 = st.columns([1, 1, 2])
+            with col1:
+                if st.button("📋", key=f"copy_{column_name}_{i}", help="Salin"):
+                    st.toast(f"Disalin: {card['text']}")
+            
+            with col2:
+                if st.button("✏️", key=f"edit_{column_name}_{i}", help="Edit"):
+                    # Simple edit in place
+                    new_text = st.text_input("Edit teks:", value=card['text'], 
+                                           key=f"edit_input_{column_name}_{i}")
+                    if new_text != card['text']:
+                        kanban_data[column_name][i]["text"] = new_text
+                        save_kanban_data(kanban_data)
+                        st.rerun()
+            
+            with col3:
+                if st.button("🗑️", key=f"delete_{column_name}_{i}", help="Hapus"):
+                    kanban_data[column_name].pop(i)
+                    save_kanban_data(kanban_data)
+                    st.rerun()
+            
+            st.divider()
 
-    # ============================================================
-    # RIGHT PANEL — Kanban HTML Drag & Drop
-    # ============================================================
-    with right:
-        st.subheader("Kanban Board (Client-side Drag & Drop)")
-
-        initial_state = json.dumps(server_data, ensure_ascii=False)
-
-        html = f"""
-<!doctype html>
+def generate_kanban_html(kanban_data_json):
+    """Generate interactive HTML kanban board"""
+    return f"""
+<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <style>
-    body {{ font-family: Arial; }}
-    .board {{ display:flex; gap:14px; }}
-    .column {{ width:260px; padding:10px; background:#f4f6f8; border-radius:8px; }}
-    .col-title {{ font-weight:bold; margin-bottom:6px; }}
-    .card {{ background:#fff; padding:8px; border-radius:6px; margin-bottom:8px;
-             box-shadow:0 1px 2px rgba(0,0,0,0.1); }}
-    .label {{ font-size:11px; padding:2px 6px; color:white; border-radius:5px; }}
-    .Feature {{ background:#2f80ed; }}
-    .Improvement {{ background:#27ae60; }}
-    .Bug {{ background:#ff4d4f; }}
-  </style>
+    <meta charset="utf-8">
+    <title>Kanban Jadwal Dokter</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 20px;
+            background: #f8f9fa;
+        }}
+        .kanban-header {{
+            text-align: center;
+            margin-bottom: 30px;
+            color: #2c3e50;
+        }}
+        .board {{
+            display: flex;
+            gap: 20px;
+            overflow-x: auto;
+            padding: 20px;
+        }}
+        .column {{
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            min-width: 280px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }}
+        .column-header {{
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }}
+        .card-list {{
+            min-height: 400px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }}
+        .card {{
+            background: white;
+            padding: 15px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            cursor: move;
+            border-left: 4px solid #4CAF50;
+            transition: transform 0.2s;
+        }}
+        .card:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }}
+        .card-label {{
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: white;
+        }}
+        .card-content {{
+            font-size: 14px;
+            line-height: 1.4;
+        }}
+        .card-priority {{
+            font-size: 11px;
+            margin-top: 8px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            display: inline-block;
+        }}
+        .priority-high {{ background: #ff4d4f; color: white; }}
+        .priority-medium {{ background: #faad14; color: white; }}
+        .priority-low {{ background: #52c41a; color: white; }}
+        
+        .label-overload {{ background: #ff7875; }}
+        .label-konflik {{ background: #ff9c6e; }}
+        .label-kosong {{ background: #69c0ff; }}
+        .label-distribusi {{ background: #95de64; }}
+        .label-beban {{ background: #b37feb; }}
+        .label-review {{ background: #ffd666; color: #333; }}
+        .label-optimal {{ background: #5cdbd3; }}
+        
+        .controls {{
+            margin-bottom: 20px;
+            text-align: center;
+        }}
+        .export-btn {{
+            background: #1890ff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }}
+        .export-btn:hover {{
+            background: #40a9ff;
+        }}
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 </head>
 <body>
-
-<div>
-  <button id="exportBtn">Export JSON</button>
-</div>
-
-<div id="board" class="board"></div>
-
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
-<script>
-  const initial = {initial_state};
-
-  function buildCard(item) {{
-    let div = document.createElement("div");
-    div.className = "card";
-
-    let label = document.createElement("div");
-    label.className = "label " + item.label;
-    label.innerText = item.label;
-
-    let title = document.createElement("div");
-    title.innerText = item.text;
-
-    div.appendChild(label);
-    div.appendChild(title);
-    return div;
-  }}
-
-  function render(state) {{
-    const board = document.getElementById("board");
-    board.innerHTML = "";
-
-    for (const col of Object.keys(state)) {{
-      let colDiv = document.createElement("div");
-      colDiv.className = "column";
-
-      let title = document.createElement("div");
-      title.className = "col-title";
-      title.innerText = col;
-
-      let list = document.createElement("div");
-      list.className = "list";
-      list.dataset.col = col;
-
-      state[col].forEach(item => list.appendChild(buildCard(item)));
-
-      colDiv.appendChild(title);
-      colDiv.appendChild(list);
-      board.appendChild(colDiv);
-
-      new Sortable(list, {{
-        group: "kanban",
-        animation: 150
-      }});
-    }}
-  }}
-
-  function exportData() {{
-    const lists = document.querySelectorAll(".list");
-    let data = {{}};
-
-    lists.forEach(list => {{
-      let col = list.dataset.col;
-      data[col] = [];
-      list.childNodes.forEach(card => {{
-        const label = card.children[0].innerText;
-        const text = card.children[1].innerText;
-        data[col].push({{text:text, label:label}});
-      }});
-    }});
-
-    const blob = new Blob([JSON.stringify(data, null, 2)], {{type:"application/json"}});
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "kanban_export.json";
-    a.click();
-  }}
-
-  document.getElementById("exportBtn").onclick = exportData;
-
-  render(initial);
-</script>
-
+    <div class="kanban-header">
+        <h2>🎯 Kanban Board - Manajemen Jadwal Dokter</h2>
+        <p>Drag & drop untuk mengatur prioritas penjadwalan</p>
+    </div>
+    
+    <div class="controls">
+        <button class="export-btn" onclick="exportKanban()">📥 Export Perubahan</button>
+        <span id="save-status" style="margin-left: 20px; color: #52c41a;"></span>
+    </div>
+    
+    <div class="board" id="kanban-board"></div>
+    
+    <script>
+        // Initial kanban data
+        const kanbanData = {kanban_data_json};
+        
+        // Color mappings
+        const labelColors = {json.dumps(LABEL_COLORS)};
+        const priorityColors = {json.dumps(PRIORITY_COLORS)};
+        
+        // Render the board
+        function renderBoard() {{
+            const board = document.getElementById('kanban-board');
+            board.innerHTML = '';
+            
+            Object.entries(kanbanData).forEach(([columnName, cards]) => {{
+                const columnDiv = document.createElement('div');
+                columnDiv.className = 'column';
+                
+                const header = document.createElement('div');
+                header.className = 'column-header';
+                header.textContent = columnName + ` (${{cards.length}})`;
+                
+                const cardList = document.createElement('div');
+                cardList.className = 'card-list';
+                cardList.dataset.column = columnName;
+                
+                cards.forEach(card => {{
+                    const cardDiv = document.createElement('div');
+                    cardDiv.className = 'card';
+                    cardDiv.dataset.card = JSON.stringify(card);
+                    
+                    const label = document.createElement('div');
+                    label.className = `card-label label-${{card.label.toLowerCase()}}`;
+                    label.textContent = card.label;
+                    label.style.backgroundColor = labelColors[card.label] || '#d9d9d9';
+                    
+                    const content = document.createElement('div');
+                    content.className = 'card-content';
+                    content.textContent = card.text;
+                    
+                    const priority = document.createElement('div');
+                    priority.className = `card-priority priority-${{card.priority.toLowerCase()}}`;
+                    priority.textContent = card.priority;
+                    priority.style.backgroundColor = priorityColors[card.priority] || '#d9d9d9';
+                    
+                    cardDiv.appendChild(label);
+                    cardDiv.appendChild(content);
+                    cardDiv.appendChild(priority);
+                    cardList.appendChild(cardDiv);
+                }});
+                
+                columnDiv.appendChild(header);
+                columnDiv.appendChild(cardList);
+                board.appendChild(columnDiv);
+                
+                // Make list sortable
+                new Sortable(cardList, {{
+                    group: 'shared',
+                    animation: 150,
+                    ghostClass: 'sortable-ghost',
+                    chosenClass: 'sortable-chosen',
+                    dragClass: 'sortable-drag',
+                    onEnd: function(evt) {{
+                        updateKanbanData();
+                        showSaveStatus('Perubahan disimpan');
+                    }}
+                }});
+            }});
+        }}
+        
+        // Update kanban data after drag & drop
+        function updateKanbanData() {{
+            const columns = document.querySelectorAll('.card-list');
+            
+            columns.forEach(columnElement => {{
+                const columnName = columnElement.dataset.column;
+                const cards = Array.from(columnElement.children).map(cardElement => {{
+                    return JSON.parse(cardElement.dataset.card);
+                }});
+                
+                kanbanData[columnName] = cards;
+            }});
+        }}
+        
+        // Export kanban data
+        function exportKanban() {{
+            updateKanbanData();
+            
+            const dataStr = JSON.stringify(kanbanData, null, 2);
+            const dataBlob = new Blob([dataStr], {{ type: 'application/json' }});
+            
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'kanban_jadwal_' + new Date().toISOString().split('T')[0] + '.json';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showSaveStatus('File berhasil di-download!');
+        }}
+        
+        // Show save status
+        function showSaveStatus(message) {{
+            const statusEl = document.getElementById('save-status');
+            statusEl.textContent = message;
+            setTimeout(() => {{
+                statusEl.textContent = '';
+            }}, 3000);
+        }}
+        
+        // Initialize
+        renderBoard();
+    </script>
 </body>
 </html>
 """
 
-        st.components.v1.html(html, height=650, scrolling=True)
+# For backward compatibility
+if __name__ == "__main__":
+    render_drag_kanban()
