@@ -10,60 +10,20 @@ from datetime import datetime
 # ============================================================
 DEFAULT_KANBAN = {
     "⚠️ MASALAH JADWAL": [
-        {
-            "text": "Slot overload Poleks (>7)", 
-            "label": "Overload", 
-            "priority": "High",
-            "details": "Slot dengan jumlah Poleks melebihi batas maksimum"
-        },
-        {
-            "text": "Dokter konflik waktu", 
-            "label": "Konflik", 
-            "priority": "High",
-            "details": "Dokter yang memiliki jadwal bentrok di poli berbeda"
-        },
-        {
-            "text": "Poli tidak terisi di jam sibuk", 
-            "label": "Kosong", 
-            "priority": "Medium",
-            "details": "Poli dengan slot kosong di jam sibuk (10:00-12:00)"
-        },
+        {"text": "Slot overload Poleks (>7)", "label": "Overload", "priority": "High"},
+        {"text": "Dokter konflik waktu", "label": "Konflik", "priority": "High"},
+        {"text": "Poli tidak terisi di jam sibuk", "label": "Kosong", "priority": "Medium"},
     ],
     "🔧 PERLU PENYESUAIAN": [
-        {
-            "text": "Distribusi tidak merata pagi-sore", 
-            "label": "Distribusi", 
-            "priority": "Medium",
-            "details": "Distribusi jadwal pagi vs sore tidak seimbang"
-        },
-        {
-            "text": "Dokter dengan jadwal terlalu padat", 
-            "label": "Beban", 
-            "priority": "Medium",
-            "details": "Dokter dengan jumlah jam praktik terlalu banyak"
-        },
+        {"text": "Distribusi tidak merata pagi-sore", "label": "Distribusi", "priority": "Medium"},
+        {"text": "Dokter dengan jadwal terlalu padat", "label": "Beban", "priority": "Medium"},
     ],
     "⏳ DALAM PROSES": [
-        {
-            "text": "Review jadwal Poli Anak", 
-            "label": "Review", 
-            "priority": "Low",
-            "details": "Jadwal Poli Anak sedang dalam proses review"
-        },
+        {"text": "Review jadwal Poli Anak", "label": "Review", "priority": "Low"},
     ],
     "✅ OPTIMAL": [
-        {
-            "text": "Poli Jantung - distribusi bagus", 
-            "label": "Optimal", 
-            "priority": "Low",
-            "details": "Distribusi jadwal Poli Jantung sudah optimal"
-        },
-        {
-            "text": "Jam 10:00-12:00 - slot ideal", 
-            "label": "Optimal", 
-            "priority": "Low",
-            "details": "Slot waktu dengan jumlah dokter ideal (3-5 dokter)"
-        },
+        {"text": "Poli Jantung - distribusi bagus", "label": "Optimal", "priority": "Low"},
+        {"text": "Jam 10:00-12:00 - slot ideal", "label": "Optimal", "priority": "Low"},
     ],
 }
 
@@ -153,28 +113,19 @@ def analyze_overload_slots(df, slot_strings):
         
         for slot in slot_strings[:15]:  # Check first 15 slots
             if slot in hari_data.columns:
-                slot_data = hari_data[hari_data[slot] == "E"]
-                poleks_count = len(slot_data)
+                poleks_count = (hari_data[slot] == "E").sum()
                 
                 if poleks_count > max_poleks:
-                    # Get list of affected Poleks
-                    affected_poleks = slot_data["POLI"].unique().tolist()
-                    
                     issues.append({
                         "text": f"{hari} {slot}: {poleks_count} Poleks (batas {max_poleks})",
                         "label": "Overload",
                         "priority": "High",
-                        "details": f"<b>Dampak:</b> {poleks_count} Poleks melebihi batas maksimum {max_poleks}<br>"
-                                  f"<b>Poleks Terdampak:</b> {', '.join(affected_poleks)}<br>"
-                                  f"<b>Waktu:</b> {hari}, {slot}<br>"
-                                  f"<b>Rekomendasi:</b> Kurangi Poleks atau redistribusi ke slot lain",
                         "data": {
                             "hari": hari,
                             "slot": slot,
                             "count": poleks_count,
                             "max": max_poleks,
-                            "type": "overload",
-                            "affected_poleks": affected_poleks
+                            "type": "overload"
                         }
                     })
     
@@ -190,38 +141,23 @@ def analyze_doctor_conflicts(df, slot_strings):
             
             for slot in slot_strings[:10]:  # Check first 10 slots
                 if slot in group.columns:
-                    slot_data = group[group[slot].isin(["R", "E"])]
-                    active_polis = slot_data["POLI"].tolist()
-                    
+                    active_polis = group[group[slot].isin(["R", "E"])]["POLI"].tolist()
                     if len(active_polis) > 1:
                         conflict_slots.append({
                             "slot": slot,
-                            "polis": active_polis,
-                            "polis_count": len(active_polis)
+                            "polis": active_polis
                         })
             
             if conflict_slots:
-                # Create detailed conflict information
-                conflict_details = []
-                for conflict in conflict_slots:
-                    conflict_details.append(f"{conflict['slot']}: {conflict['polis_count']} poli ({', '.join(conflict['polis'])})")
-                
                 issues.append({
                     "text": f"Dr. {dokter} - {hari}: konflik di {len(conflict_slots)} slot",
                     "label": "Konflik",
                     "priority": "High",
-                    "details": f"<b>Dokter:</b> Dr. {dokter}<br>"
-                              f"<b>Hari:</b> {hari}<br>"
-                              f"<b>Jumlah Konflik:</b> {len(conflict_slots)} slot<br>"
-                              f"<b>Detail Konflik:</b><br>" + 
-                              "<br>".join([f"• {detail}" for detail in conflict_details]) + 
-                              f"<br><br><b>Rekomendasi:</b> Atur ulang jadwal untuk menghindari konflik",
                     "data": {
                         "dokter": dokter,
                         "hari": hari,
                         "conflicts": conflict_slots,
-                        "type": "conflict",
-                        "total_conflicts": len(conflict_slots)
+                        "type": "conflict"
                     }
                 })
     
@@ -240,29 +176,21 @@ def analyze_empty_slots(df, slot_strings):
         for poli in hari_data["POLI"].unique():
             poli_data = hari_data[hari_data["POLI"] == poli]
             
-            empty_slots_detail = []
+            empty_in_peak = 0
             for slot in peak_slots:
                 if slot in poli_data.columns:
                     if (poli_data[slot].isin(["R", "E"])).sum() == 0:
-                        empty_slots_detail.append(slot)
+                        empty_in_peak += 1
             
-            empty_in_peak = len(empty_slots_detail)
             if empty_in_peak >= 2:  # At least 2 empty slots in peak hours
                 issues.append({
                     "text": f"{poli} - {hari}: {empty_in_peak} slot kosong di jam sibuk",
                     "label": "Kosong",
                     "priority": "Medium",
-                    "details": f"<b>Poli:</b> {poli}<br>"
-                              f"<b>Hari:</b> {hari}<br>"
-                              f"<b>Jumlah Slot Kosong:</b> {empty_in_peak}<br>"
-                              f"<b>Slot Kosong:</b> {', '.join(empty_slots_detail)}<br>"
-                              f"<b>Rentang Waktu:</b> 10:00-12:00 (jam sibuk)<br>"
-                              f"<b>Rekomendasi:</b> Tambahkan dokter atau shift di jam tersebut",
                     "data": {
                         "poli": poli,
                         "hari": hari,
                         "empty_slots": empty_in_peak,
-                        "empty_slots_list": empty_slots_detail,
                         "type": "empty"
                     }
                 })
@@ -296,19 +224,10 @@ def analyze_distribution(df, slot_strings):
                     "text": f"{poli}: {morning_pct:.0f}% pagi, {afternoon_pct:.0f}% sore",
                     "label": "Distribusi",
                     "priority": "Medium",
-                    "details": f"<b>Poli:</b> {poli}<br>"
-                              f"<b>Distribusi Pagi:</b> {morning_pct:.1f}% ({morning_count} slot)<br>"
-                              f"<b>Distribusi Sore:</b> {afternoon_pct:.1f}% ({afternoon_count} slot)<br>"
-                              f"<b>Total Slot:</b> {total}<br>"
-                              f"<b>Masalah:</b> Distribusi tidak seimbang (>70% di pagi)<br>"
-                              f"<b>Rekomendasi:</b> Pindahkan beberapa slot ke sore hari",
                     "data": {
                         "poli": poli,
                         "morning_pct": morning_pct,
                         "afternoon_pct": afternoon_pct,
-                        "morning_count": morning_count,
-                        "afternoon_count": afternoon_count,
-                        "total": total,
                         "type": "distribution"
                     }
                 })
@@ -325,30 +244,17 @@ def find_optimal_schedules(df, slot_strings):
         
         for slot in ["10:00", "11:00", "13:00"]:  # Key time slots
             if slot in hari_data.columns:
-                slot_data = hari_data[hari_data[slot].isin(["R", "E"])]
-                doctor_count = len(slot_data)
+                doctor_count = (hari_data[slot].isin(["R", "E"])).sum()
                 
                 if 3 <= doctor_count <= 5:  # Optimal range
-                    # Get list of doctors
-                    doctors = slot_data["DOKTER"].unique().tolist()
-                    polis = slot_data["POLI"].unique().tolist()
-                    
                     issues.append({
                         "text": f"{hari} {slot}: {doctor_count} dokter (optimal)",
                         "label": "Optimal",
                         "priority": "Low",
-                        "details": f"<b>Status:</b> Distribusi optimal<br>"
-                                  f"<b>Waktu:</b> {hari}, {slot}<br>"
-                                  f"<b>Jumlah Dokter:</b> {doctor_count} (ideal: 3-5)<br>"
-                                  f"<b>Dokter yang Bertugas:</b> {', '.join(doctors)}<br>"
-                                  f"<b>Poli yang Aktif:</b> {', '.join(polis)}<br>"
-                                  f"<b>Catatan:</b> Distribusi beban kerja sudah seimbang",
                         "data": {
                             "hari": hari,
                             "slot": slot,
                             "doctor_count": doctor_count,
-                            "doctors": doctors,
-                            "polis": polis,
                             "type": "optimal"
                         }
                     })
@@ -393,21 +299,15 @@ def render_drag_kanban():
             new_text = st.text_input("Judul Kartu")
             new_label = st.selectbox("Label", list(LABEL_COLORS.keys()))
             new_priority = st.selectbox("Prioritas", list(PRIORITY_COLORS.keys()))
-            new_details = st.text_area("Detail Permasalahan", 
-                                     placeholder="Deskripsi detail permasalahan...")
             target_column = st.selectbox("Kolom Tujuan", list(kanban_data.keys()))
             
             if st.form_submit_button("Tambah Kartu", use_container_width=True):
                 if new_text.strip():
-                    card_data = {
+                    kanban_data[target_column].append({
                         "text": new_text,
                         "label": new_label,
                         "priority": new_priority
-                    }
-                    if new_details.strip():
-                        card_data["details"] = new_details
-                    
-                    kanban_data[target_column].append(card_data)
+                    })
                     save_kanban_data(kanban_data)
                     st.success("Kartu ditambahkan!")
                     st.rerun()
@@ -487,7 +387,7 @@ def render_drag_kanban():
     
     # Generate HTML with interactive kanban
     html = generate_kanban_html(html_data)
-    st.components.v1.html(html, height=800, scrolling=True)
+    st.components.v1.html(html, height=700, scrolling=True)
     
     # Statistics
     st.divider()
@@ -516,84 +416,48 @@ def render_column(column_name, kanban_data):
             # Priority indicator
             priority_color = PRIORITY_COLORS.get(card.get("priority", "Medium"), "#d9d9d9")
             
-            # Create expandable card
-            with st.expander(f"📋 {card['text'][:50]}..." if len(card['text']) > 50 else f"📋 {card['text']}", expanded=False):
-                # Card header
-                st.markdown(f"""
-                <div style="border-left: 4px solid {priority_color}; padding-left: 10px; margin-bottom: 10px;">
-                    <div style="font-weight: 600; font-size: 14px;">{card['text']}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Labels
-                col_label, col_priority = st.columns([2, 1])
-                with col_label:
-                    label_color = LABEL_COLORS.get(card['label'], '#d9d9d9')
-                    st.markdown(f"""
-                    <span style="background-color: {label_color}; color: white; 
-                           padding: 4px 12px; border-radius: 12px; font-size: 0.8em;">
+            # Card header with priority
+            st.markdown(f"""
+            <div style="border-left: 4px solid {priority_color}; padding-left: 10px; margin-bottom: 10px;">
+                <div style="font-weight: 500;">{card['text']}</div>
+                <div style="display: flex; gap: 8px; margin-top: 4px;">
+                    <span style="background-color: {LABEL_COLORS.get(card['label'], '#d9d9d9')}; 
+                           color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8em;">
                         {card['label']}
                     </span>
-                    """, unsafe_allow_html=True)
-                
-                with col_priority:
-                    st.markdown(f"""
-                    <span style="color: {priority_color}; font-weight: 500; font-size: 0.9em;">
+                    <span style="color: {priority_color}; font-size: 0.8em;">
                         {card.get('priority', 'Medium')}
                     </span>
-                    """, unsafe_allow_html=True)
-                
-                # Details section
-                st.divider()
-                st.markdown("**📝 Detail Permasalahan:**")
-                
-                if 'details' in card and card['details']:
-                    # Check if details contain HTML
-                    if any(tag in card['details'] for tag in ['<br>', '<b>', '<ul>']):
-                        st.markdown(card['details'], unsafe_allow_html=True)
-                    else:
-                        st.write(card['details'])
-                    
-                    # Show structured data if available
-                    if 'data' in card and card['data']:
-                        st.divider()
-                        with st.expander("📊 Data Teknis", expanded=False):
-                            st.json(card['data'])
-                else:
-                    st.info("Tidak ada detail tambahan")
-                
-                # Action buttons
-                st.divider()
-                col_copy, col_edit, col_delete = st.columns([1, 1, 1])
-                
-                with col_copy:
-                    if st.button("📋", key=f"copy_{column_name}_{i}", help="Salin", use_container_width=True):
-                        st.toast(f"Disalin: {card['text']}")
-                
-                with col_edit:
-                    if st.button("✏️", key=f"edit_{column_name}_{i}", help="Edit", use_container_width=True):
-                        # Edit form
-                        with st.form(key=f"edit_form_{column_name}_{i}"):
-                            new_text = st.text_input("Judul", value=card.get('text', ''))
-                            new_details = st.text_area("Detail", value=card.get('details', ''))
-                            
-                            if st.form_submit_button("Simpan"):
-                                kanban_data[column_name][i]["text"] = new_text
-                                kanban_data[column_name][i]["details"] = new_details
-                                save_kanban_data(kanban_data)
-                                st.success("Kartu diperbarui!")
-                                st.rerun()
-                
-                with col_delete:
-                    if st.button("🗑️", key=f"delete_{column_name}_{i}", help="Hapus", use_container_width=True):
-                        kanban_data[column_name].pop(i)
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Action buttons
+            col1, col2, col3 = st.columns([1, 1, 2])
+            with col1:
+                if st.button("📋", key=f"copy_{column_name}_{i}", help="Salin"):
+                    st.toast(f"Disalin: {card['text']}")
+            
+            with col2:
+                if st.button("✏️", key=f"edit_{column_name}_{i}", help="Edit"):
+                    # Simple edit in place
+                    new_text = st.text_input("Edit teks:", value=card['text'], 
+                                           key=f"edit_input_{column_name}_{i}")
+                    if new_text != card['text']:
+                        kanban_data[column_name][i]["text"] = new_text
                         save_kanban_data(kanban_data)
                         st.rerun()
+            
+            with col3:
+                if st.button("🗑️", key=f"delete_{column_name}_{i}", help="Hapus"):
+                    kanban_data[column_name].pop(i)
+                    save_kanban_data(kanban_data)
+                    st.rerun()
             
             st.divider()
 
 def generate_kanban_html(kanban_data_json):
-    """Generate interactive HTML kanban board with detailed cards"""
+    """Generate interactive HTML kanban board"""
     return f"""
 <!DOCTYPE html>
 <html>
@@ -621,7 +485,7 @@ def generate_kanban_html(kanban_data_json):
             background: white;
             border-radius: 12px;
             padding: 20px;
-            min-width: 320px;
+            min-width: 280px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }}
         .column-header {{
@@ -632,7 +496,7 @@ def generate_kanban_html(kanban_data_json):
             border-bottom: 2px solid #e0e0e0;
         }}
         .card-list {{
-            min-height: 500px;
+            min-height: 400px;
             padding: 10px;
             background: #f8f9fa;
             border-radius: 8px;
@@ -651,12 +515,6 @@ def generate_kanban_html(kanban_data_json):
             transform: translateY(-2px);
             box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }}
-        .card-header {{
-            font-weight: 500;
-            font-size: 14px;
-            margin-bottom: 8px;
-            line-height: 1.4;
-        }}
         .card-label {{
             display: inline-block;
             padding: 3px 10px;
@@ -666,18 +524,9 @@ def generate_kanban_html(kanban_data_json):
             margin-bottom: 8px;
             color: white;
         }}
-        .card-details {{
-            font-size: 12px;
-            color: #666;
-            margin-top: 10px;
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 6px;
-            border-left: 3px solid #1890ff;
-            display: none;
-        }}
-        .card:hover .card-details {{
-            display: block;
+        .card-content {{
+            font-size: 14px;
+            line-height: 1.4;
         }}
         .card-priority {{
             font-size: 11px;
@@ -698,25 +547,6 @@ def generate_kanban_html(kanban_data_json):
         .label-review {{ background: #ffd666; color: #333; }}
         .label-optimal {{ background: #5cdbd3; }}
         
-        .card-tooltip {{
-            position: relative;
-        }}
-        .card-tooltip:hover::after {{
-            content: attr(data-tooltip);
-            position: absolute;
-            bottom: 100%;
-            left: 0;
-            background: #333;
-            color: white;
-            padding: 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            white-space: pre-line;
-            z-index: 1000;
-            width: 300px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }}
-        
         .controls {{
             margin-bottom: 20px;
             text-align: center;
@@ -733,30 +563,6 @@ def generate_kanban_html(kanban_data_json):
         .export-btn:hover {{
             background: #40a9ff;
         }}
-        .stats {{
-            display: flex;
-            gap: 20px;
-            margin-top: 20px;
-            justify-content: center;
-        }}
-        .stat-box {{
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-            min-width: 120px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        }}
-        .stat-value {{
-            font-size: 24px;
-            font-weight: bold;
-            color: #1890ff;
-        }}
-        .stat-label {{
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
-        }}
     </style>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 </head>
@@ -764,25 +570,6 @@ def generate_kanban_html(kanban_data_json):
     <div class="kanban-header">
         <h2>🎯 Kanban Board - Manajemen Jadwal Dokter</h2>
         <p>Drag & drop untuk mengatur prioritas penjadwalan</p>
-    </div>
-    
-    <div class="stats">
-        <div class="stat-box" id="stat-total">
-            <div class="stat-value">0</div>
-            <div class="stat-label">Total Kartu</div>
-        </div>
-        <div class="stat-box" id="stat-high">
-            <div class="stat-value">0</div>
-            <div class="stat-label">Prioritas Tinggi</div>
-        </div>
-        <div class="stat-box" id="stat-problems">
-            <div class="stat-value">0</div>
-            <div class="stat-label">Masalah</div>
-        </div>
-        <div class="stat-box" id="stat-optimal">
-            <div class="stat-value">0</div>
-            <div class="stat-label">Optimal</div>
-        </div>
     </div>
     
     <div class="controls">
@@ -799,29 +586,6 @@ def generate_kanban_html(kanban_data_json):
         // Color mappings
         const labelColors = {json.dumps(LABEL_COLORS)};
         const priorityColors = {json.dumps(PRIORITY_COLORS)};
-        
-        // Update statistics
-        function updateStatistics() {{
-            let totalCards = 0;
-            let highPriority = 0;
-            let problems = 0;
-            let optimal = 0;
-            
-            Object.entries(kanbanData).forEach(([columnName, cards]) => {{
-                totalCards += cards.length;
-                
-                cards.forEach(card => {{
-                    if (card.priority === 'High') highPriority++;
-                    if (columnName === '⚠️ MASALAH JADWAL') problems++;
-                    if (columnName === '✅ OPTIMAL') optimal++;
-                }});
-            }});
-            
-            document.getElementById('stat-total').querySelector('.stat-value').textContent = totalCards;
-            document.getElementById('stat-high').querySelector('.stat-value').textContent = highPriority;
-            document.getElementById('stat-problems').querySelector('.stat-value').textContent = problems;
-            document.getElementById('stat-optimal').querySelector('.stat-value').textContent = optimal;
-        }}
         
         // Render the board
         function renderBoard() {{
@@ -840,45 +604,28 @@ def generate_kanban_html(kanban_data_json):
                 cardList.className = 'card-list';
                 cardList.dataset.column = columnName;
                 
-                cards.forEach((card, index) => {{
+                cards.forEach(card => {{
                     const cardDiv = document.createElement('div');
                     cardDiv.className = 'card';
                     cardDiv.dataset.card = JSON.stringify(card);
-                    
-                    // Add tooltip for hover
-                    if (card.details) {{
-                        cardDiv.classList.add('card-tooltip');
-                        cardDiv.setAttribute('data-tooltip', 
-                            card.details.replace(/<br>/g, '\\n').replace(/<[^>]*>/g, ''));
-                    }}
-                    
-                    const header = document.createElement('div');
-                    header.className = 'card-header';
-                    header.textContent = card.text.length > 60 ? card.text.substring(0, 60) + '...' : card.text;
                     
                     const label = document.createElement('div');
                     label.className = `card-label label-${{card.label.toLowerCase()}}`;
                     label.textContent = card.label;
                     label.style.backgroundColor = labelColors[card.label] || '#d9d9d9';
                     
+                    const content = document.createElement('div');
+                    content.className = 'card-content';
+                    content.textContent = card.text;
+                    
                     const priority = document.createElement('div');
                     priority.className = `card-priority priority-${{card.priority.toLowerCase()}}`;
                     priority.textContent = card.priority;
                     priority.style.backgroundColor = priorityColors[card.priority] || '#d9d9d9';
                     
-                    // Details section (shown on hover via CSS)
-                    const details = document.createElement('div');
-                    details.className = 'card-details';
-                    if (card.details) {{
-                        details.innerHTML = card.details;
-                    }} else {{
-                        details.textContent = 'Tidak ada detail tambahan';
-                    }}
-                    
-                    cardDiv.appendChild(header);
                     cardDiv.appendChild(label);
+                    cardDiv.appendChild(content);
                     cardDiv.appendChild(priority);
-                    cardDiv.appendChild(details);
                     cardList.appendChild(cardDiv);
                 }});
                 
@@ -899,8 +646,6 @@ def generate_kanban_html(kanban_data_json):
                     }}
                 }});
             }});
-            
-            updateStatistics();
         }}
         
         // Update kanban data after drag & drop
@@ -915,8 +660,6 @@ def generate_kanban_html(kanban_data_json):
                 
                 kanbanData[columnName] = cards;
             }});
-            
-            updateStatistics();
         }}
         
         // Export kanban data
