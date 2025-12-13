@@ -2,6 +2,7 @@ streamlit
 pandas
 openpyxl
 matplotlib
+streamlit-dnd
 numpy
 python-dateutil
 tzdata
